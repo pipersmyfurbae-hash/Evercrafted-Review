@@ -46,8 +46,13 @@ export default function Home() {
   };
   const continueToWorkspace = () => {
     const payload = { memory, occasion, honoree, location, whoWasThere, timeOfDay, guided: false, name: result?.atmosphere ? `${result.atmosphere} memory` : "Memory wreath" };
-    sessionStorage.setItem("evercrafted-memory-intake", JSON.stringify(payload));
-    if (!user) { startLogin(); return; }
+    if (!user) {
+      // Stash the draft only when we're about to lose it to a login redirect —
+      // the resume effect below picks it back up once the user returns signed in.
+      sessionStorage.setItem("evercrafted-memory-intake", JSON.stringify(payload));
+      startLogin();
+      return;
+    }
     persistMemory.mutate(payload);
   };
 
