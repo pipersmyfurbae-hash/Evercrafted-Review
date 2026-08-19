@@ -32,6 +32,7 @@ describe("scene render handoff", () => {
   });
 
   it("persists the scene index, title, and prompt with an uploaded render", async () => {
+    assetSelectResult.mockResolvedValueOnce([{ id: 77, projectId: 1, status: "approved" }]).mockResolvedValueOnce([{ id: 88, projectId: 1, kind: "wreath", status: "approved" }]);
     const result = await appRouter.createCaller(ctx).render.upload({ projectId: 1, kind: "lifestyle", filename: "scene-01.png", mimeType: "image/png", base64: "data:image/png;base64," + "a".repeat(40), sceneIndex: 0, sceneTitle: "The dock at first light", prompt: "A threshold scene prompt" });
     expect(result.status).toBe("review");
     expect(insertValues).toHaveBeenCalledOnce();
@@ -40,12 +41,34 @@ describe("scene render handoff", () => {
   });
 
   it("accepts a dedicated wreath render without scene provenance", async () => {
+    assetSelectResult.mockResolvedValueOnce([{ id: 77, projectId: 1, status: "approved" }]);
     const result = await appRouter.createCaller(ctx).render.upload({ projectId: 1, kind: "wreath", filename: "wreath-anchor.png", mimeType: "image/png", base64: "data:image/png;base64," + "b".repeat(40), prompt: "Wreath-only anchor prompt" });
     expect(result).toMatchObject({ status: "review", kind: "wreath" });
     const payload = insertValues.mock.calls[0]?.[0] as { kind: string; provenance: Record<string, unknown> };
     expect(payload.kind).toBe("wreath");
     expect(payload.provenance).toMatchObject({ prompt: "Wreath-only anchor prompt" });
     expect(payload.provenance).not.toHaveProperty("sceneIndex");
+  });
+
+  it("blocks a wreath upload when the Blueprint is not approved", async () => {
+    assetSelectResult.mockResolvedValueOnce([]);
+    await expect(appRouter.createCaller(ctx).render.upload({ projectId: 1, kind: "wreath", filename: "wreath.png", mimeType: "image/png", base64: "data:image/png;base64," + "c".repeat(40) })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("blocks a lifestyle upload when the approved wreath anchor is missing", async () => {
+    assetSelectResult.mockResolvedValueOnce([{ id: 77, projectId: 1, status: "approved" }]).mockResolvedValueOnce([]);
+    await expect(appRouter.createCaller(ctx).render.upload({ projectId: 1, kind: "lifestyle", filename: "scene.png", mimeType: "image/png", base64: "data:image/png;base64," + "d".repeat(40), sceneIndex: 0 })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("rejects an unsupported render MIME type", async () => {
+    assetSelectResult.mockResolvedValueOnce([{ id: 77, projectId: 1, status: "approved" }]);
+    await expect(appRouter.createCaller(ctx).render.upload({ projectId: 1, kind: "wreath", filename: "wreath.svg", mimeType: "image/svg+xml", base64: "data:image/svg+xml;base64," + "e".repeat(40) })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("sanitizes uploaded filenames before storage", async () => {
+    assetSelectResult.mockResolvedValueOnce([{ id: 77, projectId: 1, status: "approved" }]);
+    await appRouter.createCaller(ctx).render.upload({ projectId: 1, kind: "wreath", filename: "../wreath final.png", mimeType: "image/png", base64: "data:image/png;base64," + "f".repeat(40) });
+    expect(vi.mocked((await import("./storage")).storagePut)).toHaveBeenCalledWith(expect.stringContaining("wreath_final.png"), expect.anything(), "image/png");
   });
 
   it("persists Comet provenance when generating a render", async () => {

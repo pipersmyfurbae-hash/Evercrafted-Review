@@ -1,3 +1,5 @@
+import { validateStoryGrounding } from "../shared/storyGrounding";
+
 const COMETAPI_BASE_URL = "https://api.cometapi.com";
 const DEFAULT_MODEL = "claude-sonnet-5";
 
@@ -17,6 +19,8 @@ export type StoryGenesisOutput = {
     movement: string;
     silenceArc: number[];
   };
+  grounding: import("../shared/storyGrounding").StoryGrounding;
+  designSignals: import("../shared/storyGrounding").StoryDesignSignals;
   beats: Array<{
     name: string;
     role: string;
@@ -27,13 +31,15 @@ export type StoryGenesisOutput = {
   }>;
 };
 
-const systemPrompt = `You are Evercrafted's Story Genesis Engine running on Claude Sonnet 5. Follow the Story Genesis Engine doctrine exactly: get lost in the world first, perform invisible emotional archaeology, then write the story and derive the cinematic render prompts from what the story reveals. Return ONLY valid JSON matching the requested schema.
+const systemPrompt = `You are Evercrafted's Story Genesis Engine running on Claude Sonnet 5. The submitted memory is the only source of biographical fact. Return ONLY valid JSON matching the requested schema.
 
-Write a 600–800 word literary narrative in five movements: The World, The Character Enters, The Gathering, The Making / The Hanging, and The After. Use present tense where natural, gender-neutral they/them/their pronouns, specific sensory detail, and no product copy. Avoid generic adjectives and cliches. Never describe the wreath as a product. The wreath should arrive naturally as a presence in the world. The ending must land through one small concrete detail rather than explanation.
+Produce two separate outputs. First, write a 600–800 word Memory Story in five movements. It may be poetic and emotionally deep, but it may not invent deaths, relationships, events, places, rituals, time periods, actions, dialogue, personal history, specific florals, inventory, wreath-making, or hanging unless the client supplied that detail. Preserve the client's point of view and clearly distinguish source-grounded details from interpretation. Never turn the memory into a fictional product story.
 
-Return 7–9 distinct cinematic render beats for a wreath-only story. Every beat must be a narrative moment, not a repeated wreath prompt. Across the set include establishing world, character/presence, gathering, completed wreath in situ, detail/texture, and the after. Each beat must include full camera direction with position, lens, distance, and depth of field; full light direction with quality, direction, time, and temperature; a cinematic color grade; an emotional atmosphere; and a paste-ready FULL PROMPT that includes camera, lens, light, color grade, mood, Evercrafted Style DNA, aspect ratio, and negative prompts. No two beats may share the same camera position + lens + time combination. Include at least one wide establishing shot and one macro detail shot. Show the wreath in-frame selectively in 2–4 beats, not every beat.
+Second, produce Structured Design Signals for downstream systems. Signals may describe emotion, movement, intensity, atmosphere, sensory evidence, symbolic themes, palette direction, material qualities, directional-flow character, focal character, negative-space meaning, and avoidances. Signals must not select inventory, assign floral roles or counts, choose materials, or specify Blueprint geometry.
 
-Locked rules: never include cherry blossoms, pussy willow, dried wheat, or sunflowers; integrate warm LED lights when the setting is interior, dusk, or evening; do not use faux, silk, or grapevine as product descriptors; keep collection direction after the story; and preserve the emotional world rather than forcing a commercial scene.`;
+The beats are story-grounded cinematic moments only. They must not introduce unsupported biography or floral/composition instructions. No beat may contain floral recipe, inventory, focal/secondary/bridge/greenery roles, stem counts, clock positions, clusters, open arcs, Blueprint instructions, or wreath construction unless directly present in the submitted memory. Include camera and light language for visual storytelling, preserve the boundary between story discovery and downstream design, and return a concise set of 3–5 beats, preferably 5 when the memory supports it.
+
+Return grounding evidence with sourceDetails, interpretations, unsupportedClaims, majorUnsupportedClaims, and approvalEligible. Any major unsupported biographical claim must make approvalEligible false. Never include cherry blossoms, pussy willow, dried wheat, or sunflowers unless the client explicitly mentioned them; do not silently invent any other material. The client must approve the source-grounded story before Inventory Weaver runs.`;
 
 const storySchema = {
   title: "string",
@@ -43,6 +49,12 @@ const storySchema = {
     collectionName: "string",
     movement: "string",
     silenceArc: ["number", "number"],
+  },
+  grounding: {
+    sourceDetails: ["string"], interpretations: ["string"], unsupportedClaims: ["string"], majorUnsupportedClaims: ["string"], approvalEligible: "boolean",
+  },
+  designSignals: {
+    emotions: ["string"], emotionalMovement: "string", intensity: "number", atmosphere: "string", sensoryEvidence: ["string"], symbolicThemes: ["string"], paletteDirection: ["string"], materialQualities: ["string"], directionalFlowCharacter: "string", focalCharacter: "string", negativeSpaceMeaning: "string", avoidances: ["string"],
   },
   beats: [
     {
@@ -64,16 +76,18 @@ const parseJson = (value: string): unknown => {
 const validateStory = (value: unknown): StoryGenesisOutput => {
   if (!value || typeof value !== "object") throw new Error("Claude returned a non-object Story Genesis response.");
   const story = value as Partial<StoryGenesisOutput>;
-  if (typeof story.title !== "string" || typeof story.body !== "string" || !story.metadata || !Array.isArray(story.beats)) {
+  if (typeof story.title !== "string" || typeof story.body !== "string" || !story.metadata || !story.grounding || !story.designSignals || !Array.isArray(story.beats)) {
     throw new Error("Claude Story Genesis response is missing title, body, metadata, or beats.");
   }
-  if (story.beats.length < 7 || story.beats.length > 9) throw new Error(`Claude returned ${story.beats.length} beats; Story Genesis requires 7–9.`);
+  if (story.beats.length < 3 || story.beats.length > 5) throw new Error(`Claude returned ${story.beats.length} beats; Story Genesis requires 3–5.`);
   for (let index = 0; index < story.beats.length; index += 1) {
     const beat = story.beats[index];
     if (!beat || typeof beat !== "object" || ["name", "role", "setting", "camera", "light", "prompt"].some((key) => typeof (beat as Record<string, unknown>)[key] !== "string")) {
       throw new Error(`Claude beat ${index + 1} is missing required cinematic fields.`);
     }
   }
+  const grounding = story.grounding as StoryGenesisOutput["grounding"];
+  if (!Array.isArray(grounding.sourceDetails) || !Array.isArray(grounding.interpretations) || !Array.isArray(grounding.unsupportedClaims) || !Array.isArray(grounding.majorUnsupportedClaims) || typeof grounding.approvalEligible !== "boolean") throw new Error("Claude Story Genesis grounding evidence is incomplete.");
   return story as StoryGenesisOutput;
 };
 
@@ -100,7 +114,9 @@ export async function generateClaudeStory(input: StoryGenesisInput): Promise<Sto
   const content = payload.choices?.[0]?.message?.content;
   const text = Array.isArray(content) ? content.map((part) => part.text ?? "").join("") : content;
   if (!text) throw new Error("CometAPI Claude returned no Story Genesis content.");
-  return validateStory(parseJson(text));
+  const story = validateStory(parseJson(text));
+  story.grounding = validateStoryGrounding(story.grounding, story.body, story.beats, input.memory);
+  return story;
 }
 
 export const storyGenesisProvider = { provider: "cometapi", model: DEFAULT_MODEL, endpoint: `${COMETAPI_BASE_URL}/v1/chat/completions` };

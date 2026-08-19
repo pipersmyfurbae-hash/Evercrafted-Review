@@ -11,23 +11,26 @@ import { startLogin } from "@/const";
 
 const occasions = ["A person I carry", "A place I return to", "A season that changed me", "A threshold"];
 const times = ["Dawn", "Morning", "Golden hour", "Dusk", "Night"];
+const paletteSwatch = (value: string, index: number) => { if (/^#[0-9a-f]{6}$/i.test(value)) return value; const known: Record<string, string> = { "berry dusk": "#7A3343", "quiet sage": "#57745D", "aged ivory": "#F1E8D5", "candlelit amber": "#B78950", "stone hush": "#77746A", "moss green": "#60715E", "linen white": "#F3EFE6", "slate blue": "#667B8A", "weathered lavender": "#8D7B98", "sea glass": "#DCE5E3" }; return known[value.toLowerCase()] ?? ["#7A3343", "#57745D", "#B78950", "#8D7B98", "#667B8A"][index % 5]; };
 
 export default function Home() {
   const { user } = useAuth();
   const [, navigate] = useLocation();
   const [memory, setMemory] = useState("");
-  const [occasion, setOccasion] = useState(occasions[0]);
+  const [occasion, setOccasion] = useState("");
   const [honoree, setHonoree] = useState("");
   const [location, setLocation] = useState("");
   const [whoWasThere, setWhoWasThere] = useState("");
-  const [timeOfDay, setTimeOfDay] = useState(times[1]);
+  const [timeOfDay, setTimeOfDay] = useState("");
   const [result, setResult] = useState<null | { atmosphere: string; summary: string; story: string; palette: string[] }>(null);
   const [approved, setApproved] = useState(false);
   const [weaveStage, setWeaveStage] = useState(0);
+  const [weaveSlow, setWeaveSlow] = useState(false);
   const [validationMessage, setValidationMessage] = useState("");
 
   const weave = trpc.memory.weave.useMutation({
-    onSuccess: (data) => { setResult(data); setApproved(false); },
+    onSuccess: (data) => { setResult(data); setApproved(false); setWeaveSlow(false); },
+    onError: () => setWeaveSlow(false),
   });
   const persistMemory = trpc.memory.createMemoryProject.useMutation({ onSuccess: (data) => navigate(data.workspacePath), onError: (error) => window.alert(error.message) });
   useEffect(() => { if (!user || persistMemory.isPending) return; const saved = sessionStorage.getItem("evercrafted-memory-intake"); if (!saved) return; try { const payload = JSON.parse(saved) as Parameters<typeof persistMemory.mutate>[0]; sessionStorage.removeItem("evercrafted-memory-intake"); persistMemory.mutate(payload); } catch { sessionStorage.removeItem("evercrafted-memory-intake"); } }, [user]);
@@ -37,7 +40,7 @@ export default function Home() {
     return [memory.trim(), occasion, honoree.trim(), location.trim(), whoWasThere.trim(), timeOfDay].filter(Boolean).length;
   }, [memory, occasion, honoree, location, whoWasThere, timeOfDay]);
   const progressiveStage = weave.isPending ? weaveStage : Math.min(3, Math.floor(progress / 2));
-  useEffect(() => { if (!weave.isPending) return; const timer = window.setInterval(() => setWeaveStage((stage) => Math.min(stage + 1, 3)), 900); return () => window.clearInterval(timer); }, [weave.isPending]);
+  useEffect(() => { if (!weave.isPending) { setWeaveSlow(false); return; } const stageTimer = window.setInterval(() => setWeaveStage((stage) => Math.min(stage + 1, 3)), 900); const slowTimer = window.setTimeout(() => setWeaveSlow(true), 12000); return () => { window.clearInterval(stageTimer); window.clearTimeout(slowTimer); }; }, [weave.isPending]);
   const submit = () => {
     if (!memory.trim() || memory.trim().length < 25) { setValidationMessage("Add a little more of the memory—at least 25 characters—so we can read its emotional shape."); return; }
     setValidationMessage("");
@@ -64,7 +67,7 @@ export default function Home() {
           <span className="font-serif text-xl italic tracking-wide text-white">Evercrafted</span>
         </div>
         <div className="flex items-center gap-3 text-[10px] uppercase tracking-[0.28em] text-white/80">
-          <Link href="#how-it-works" className="hidden sm:block">The method</Link><Link href="/signature-wreaths" className="hidden sm:block">Signature wreaths</Link><Link href="/plans" className="hidden sm:block">Plans</Link>
+          <Link href="#how-it-works" className="hidden sm:block">The method</Link><Link href="/guided" className="hidden sm:block">Guided journey</Link><Link href="/signature-wreaths" className="hidden sm:block">Signature wreaths</Link><Link href="/plans" className="hidden sm:block">Plans</Link>
           {user ? <Link href="/workspace" className="rounded-full border border-white/35 px-4 py-2">Workspace</Link> : <button onClick={() => startLogin()} className="rounded-full border border-white/35 px-4 py-2">Sign in</button>}
         </div>
       </header>
@@ -105,12 +108,13 @@ export default function Home() {
 
           <div className="mt-8 flex items-center justify-end gap-4 border-t border-[#eee8df] pt-6"><Button onClick={submit} disabled={!canSubmit} className="rounded-full bg-[#304c3b] px-6 py-6 text-xs uppercase tracking-[0.2em] hover:bg-[#243a2d]">{weave.isPending ? <><Loader2 className="mr-2 animate-spin" size={15} /> Weaving</> : <><Wand2 className="mr-2" size={15} /> Weave my wreath</>}</Button></div>
           {validationMessage && <p role="alert" className="mt-4 text-right text-sm text-[#9b5e45]">{validationMessage}</p>}
+          {weaveSlow && weave.isPending && <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-[#d9b995] bg-[#fff7ed] p-4 text-sm text-[#805d3d]"><span>The reading is taking longer than expected.</span><Button variant="outline" onClick={() => { weave.reset(); setWeaveStage(0); setWeaveSlow(false); }} className="rounded-full border-[#c9a16f] text-[#805d3d]">Retry reading</Button></div>}
           {progress > 0 && <div className="mt-6 grid grid-cols-3 gap-2 rounded-2xl border border-[#e4dacb] bg-[#f3eee5] p-4">{["Reading the memory", "Translating the feeling", "Placing the first form"].map((stage, index) => <div key={stage} className={`rounded-xl p-3 font-mono text-[9px] uppercase leading-relaxed tracking-[.1em] transition ${progressiveStage > index ? "bg-[#304c3b] text-white" : "text-[#978b7b]"}`}><span className="block text-[#d9c28f]">0{index + 1}</span>{stage}</div>)}</div>}
           {weave.error && <p className="mt-4 text-sm text-red-700">{weave.error.message}</p>}
         </div>
       </section>
 
-      {result && <section className="border-y border-[#d9d0c3] bg-[#eee9df] px-5 py-20 sm:px-10"><div className="mx-auto max-w-5xl"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="eyebrow">Your first reading</p><h2 className="mt-3 font-serif text-5xl font-light leading-none">{result.atmosphere}</h2></div><Badge className="rounded-full bg-[#304c3b] px-4 py-2 font-mono text-[10px] uppercase tracking-[0.18em]">{approved ? "Approved · ready to build" : "Draft · client review"}</Badge></div><div className="mt-10 grid gap-8 lg:grid-cols-[1.3fr_.7fr]"><div className="rounded-2xl bg-[#fbfaf7] p-7 font-serif text-xl leading-relaxed text-[#4d493f]">{result.summary}<div className="mt-8 border-t border-[#e5ded2] pt-6 text-base text-[#797168]">{result.story}</div></div><div className="rounded-2xl bg-[#304c3b] p-7 text-[#f8f5ef]"><p className="eyebrow text-[#d9c28f]">Palette language</p><div className="mt-5 space-y-4">{result.palette.map((color) => <div key={color} className="flex items-center gap-3 font-serif text-lg"><CircleDot size={17} className="text-[#d9c28f]" /> {color}</div>)}</div>{approved ? <div className="mt-10"><Button disabled={persistMemory.isPending} onClick={continueToWorkspace} className="w-full rounded-full bg-[#d9c28f] text-[#304c3b] hover:bg-[#ecd7a6]">{persistMemory.isPending ? <span className="inline-flex items-center gap-2"><span>Giving this memory a home</span><span className="inline-flex gap-1" aria-hidden="true"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#304c3b] [animation-delay:-300ms]" /><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#304c3b] [animation-delay:-150ms]" /><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#304c3b]" /></span></span> : <>Continue to the emotional gate <ArrowRight className="ml-2" size={15} /> </>}</Button>{persistMemory.isPending && <p role="status" className="mt-3 text-center font-mono text-[9px] uppercase tracking-[.16em] text-[#887554]">Naming the collection from your memory · opening Story Genesis next</p>}</div> : <Button onClick={() => setApproved(true)} className="mt-10 w-full rounded-full bg-[#d9c28f] text-[#304c3b] hover:bg-[#ecd7a6]">Approve emotional direction <Check className="ml-2" size={15} /></Button>}</div></div></div></section>}
+      {result && <section className="border-y border-[#d9d0c3] bg-[#eee9df] px-5 py-20 sm:px-10"><div className="mx-auto max-w-5xl"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="eyebrow">Your first reading</p><h2 className="mt-3 font-serif text-5xl font-light leading-none">{result.atmosphere}</h2></div><Badge className="rounded-full bg-[#304c3b] px-4 py-2 font-mono text-[10px] uppercase tracking-[0.18em]">{approved ? "Approved · ready to build" : "Draft · client review"}</Badge></div><div className="mt-10 grid gap-8 lg:grid-cols-[1.3fr_.7fr]"><div className="rounded-2xl bg-[#fbfaf7] p-7 font-serif text-xl leading-relaxed text-[#4d493f]">{result.summary}<div className="mt-8 border-t border-[#e5ded2] pt-6 text-base text-[#797168]">{result.story}</div></div><div className="rounded-2xl bg-[#304c3b] p-7 text-[#f8f5ef]"><p className="eyebrow text-[#d9c28f]">Palette language</p><div className="mt-5 space-y-4">{result.palette.map((color, index) => <div key={color} className="flex items-center gap-3 font-serif text-lg"><span aria-hidden="true" className="h-6 w-6 rounded-full border border-black/10 shadow-inner" style={{ backgroundColor: paletteSwatch(color, index) }} /><span>{color}</span><span className="font-mono text-[9px] uppercase tracking-[.12em] text-white/50">{paletteSwatch(color, index)}</span></div>)}</div>{approved ? <div className="mt-10"><Button disabled={persistMemory.isPending} onClick={continueToWorkspace} className="w-full rounded-full bg-[#d9c28f] text-[#304c3b] hover:bg-[#ecd7a6]">{persistMemory.isPending ? <span className="inline-flex items-center gap-2"><span>Giving this memory a home</span><span className="inline-flex gap-1" aria-hidden="true"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#304c3b] [animation-delay:-300ms]" /><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#304c3b] [animation-delay:-150ms]" /><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#304c3b]" /></span></span> : <>Continue to the emotional gate <ArrowRight className="ml-2" size={15} /> </>}</Button>{persistMemory.isPending && <p role="status" className="mt-3 text-center font-mono text-[9px] uppercase tracking-[.16em] text-[#887554]">Naming the collection from your memory · opening Story Genesis next</p>}</div> : <Button onClick={() => setApproved(true)} className="mt-10 w-full rounded-full bg-[#d9c28f] text-[#304c3b] hover:bg-[#ecd7a6]">Approve emotional direction <Check className="ml-2" size={15} /></Button>}</div></div></div></section>}
 
       <section id="how-it-works" className="mx-auto max-w-7xl px-5 py-20 sm:px-10 lg:py-28"><div className="grid gap-10 lg:grid-cols-[.8fr_1.2fr]"><div><p className="eyebrow">The method</p><h2 className="mt-4 font-serif text-5xl font-light leading-none">A design system with a pulse.</h2></div><div className="grid gap-4 sm:grid-cols-3">{[["01", "Read the feeling", "Memory becomes atmosphere, palette, movement, and silence."], ["02", "Place by meaning", "Approved stems become a deterministic, hand-buildable blueprint."], ["03", "Make it visible", "Prompts, renders, lifestyle scenes, and a lookbook bring it home."]].map(([n, title, body]) => <div key={n} className="border-t border-[#cfc5b6] pt-4"><p className="font-mono text-[10px] tracking-[0.18em] text-[#9a8260]">{n}</p><h3 className="mt-8 font-serif text-3xl font-light">{title}</h3><p className="mt-4 font-serif text-lg leading-relaxed text-[#756e63]">{body}</p><ChevronRight className="mt-8 text-[#9a8260]" size={17} /></div>)}</div></div></section>
       <footer className="bg-[#26342b] px-5 py-10 text-center text-[#e5d8be] sm:px-10"><div className="font-serif text-3xl italic">Evercrafted</div><div className="mt-3 font-mono text-[9px] uppercase tracking-[0.28em] text-white/50">Woven from memory · built by hand</div></footer>

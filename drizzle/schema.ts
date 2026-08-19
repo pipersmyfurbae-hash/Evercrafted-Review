@@ -64,6 +64,7 @@ export const projects = evercrafted.table("projects", {
   name: varchar("name", { length: 160 }).notNull(),
   status: projectStatusEnum("status").default("intake").notNull(),
   wreathSizeIn: numeric("wreathSizeIn", { precision: 6, scale: 2 }).default("24").notNull(),
+  floralRecipe: json("floralRecipe"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().notNull().$onUpdate(() => new Date()),
 });

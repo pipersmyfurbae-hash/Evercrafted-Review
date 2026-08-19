@@ -210,16 +210,42 @@ var systemRouter = router({
   })
 });
 
+// shared/storyGrounding.ts
+var forbiddenDesignLeakage = /\b(flora(?:l)? recipe|focal|secondary|bridge|greenery|texture role|stem count|clock position|o'clock|cluster|open arc|grapevine|eucalyptus|wreath composition|blueprint|inventory)\b/i;
+var unsupportedBiographicalSignals = /\b(died|death|passed away|widow|widower|eleven years|one year|for years|last year|every morning|always did|daughter|son|grandmother|grandfather|mother|father|wife|husband|married|divorce|funeral|buried)\b/i;
+function validateStoryGrounding(grounding, body, beats, memory) {
+  const sourceText = memory.toLowerCase();
+  const unsupported = [...grounding.unsupportedClaims];
+  const major = [...grounding.majorUnsupportedClaims];
+  if (forbiddenDesignLeakage.test(body) || beats.some((beat) => forbiddenDesignLeakage.test(`${beat.setting ?? ""} ${beat.prompt ?? ""}`))) {
+    major.push("The generated Story Genesis output contains floral, inventory, or Blueprint implementation instructions.");
+  }
+  const biographicalText = `${body} ${beats.map((beat) => `${beat.setting ?? ""} ${beat.prompt ?? ""}`).join(" ")}`;
+  const matched = biographicalText.match(new RegExp(unsupportedBiographicalSignals.source, "gi")) ?? [];
+  matched.forEach((signal) => {
+    if (!sourceText.includes(signal.toLowerCase())) {
+      const claim = `Potential unsupported biographical claim: ${signal}`;
+      unsupported.push(claim);
+      major.push(claim);
+    }
+  });
+  const uniqueUnsupported = Array.from(new Set(unsupported));
+  const uniqueMajor = Array.from(new Set(major));
+  return { ...grounding, unsupportedClaims: Array.from(new Set(uniqueUnsupported)), majorUnsupportedClaims: Array.from(new Set(uniqueMajor)), approvalEligible: uniqueMajor.length === 0 && grounding.approvalEligible !== false };
+}
+
 // server/cometClaude.ts
 var COMETAPI_BASE_URL = "https://api.cometapi.com";
 var DEFAULT_MODEL = "claude-sonnet-5";
-var systemPrompt = `You are Evercrafted's Story Genesis Engine running on Claude Sonnet 5. Follow the Story Genesis Engine doctrine exactly: get lost in the world first, perform invisible emotional archaeology, then write the story and derive the cinematic render prompts from what the story reveals. Return ONLY valid JSON matching the requested schema.
+var systemPrompt = `You are Evercrafted's Story Genesis Engine running on Claude Sonnet 5. The submitted memory is the only source of biographical fact. Return ONLY valid JSON matching the requested schema.
 
-Write a 600\u2013800 word literary narrative in five movements: The World, The Character Enters, The Gathering, The Making / The Hanging, and The After. Use present tense where natural, gender-neutral they/them/their pronouns, specific sensory detail, and no product copy. Avoid generic adjectives and cliches. Never describe the wreath as a product. The wreath should arrive naturally as a presence in the world. The ending must land through one small concrete detail rather than explanation.
+Produce two separate outputs. First, write a 600\u2013800 word Memory Story in five movements. It may be poetic and emotionally deep, but it may not invent deaths, relationships, events, places, rituals, time periods, actions, dialogue, personal history, specific florals, inventory, wreath-making, or hanging unless the client supplied that detail. Preserve the client's point of view and clearly distinguish source-grounded details from interpretation. Never turn the memory into a fictional product story.
 
-Return 7\u20139 distinct cinematic render beats for a wreath-only story. Every beat must be a narrative moment, not a repeated wreath prompt. Across the set include establishing world, character/presence, gathering, completed wreath in situ, detail/texture, and the after. Each beat must include full camera direction with position, lens, distance, and depth of field; full light direction with quality, direction, time, and temperature; a cinematic color grade; an emotional atmosphere; and a paste-ready FULL PROMPT that includes camera, lens, light, color grade, mood, Evercrafted Style DNA, aspect ratio, and negative prompts. No two beats may share the same camera position + lens + time combination. Include at least one wide establishing shot and one macro detail shot. Show the wreath in-frame selectively in 2\u20134 beats, not every beat.
+Second, produce Structured Design Signals for downstream systems. Signals may describe emotion, movement, intensity, atmosphere, sensory evidence, symbolic themes, palette direction, material qualities, directional-flow character, focal character, negative-space meaning, and avoidances. Signals must not select inventory, assign floral roles or counts, choose materials, or specify Blueprint geometry.
 
-Locked rules: never include cherry blossoms, pussy willow, dried wheat, or sunflowers; integrate warm LED lights when the setting is interior, dusk, or evening; do not use faux, silk, or grapevine as product descriptors; keep collection direction after the story; and preserve the emotional world rather than forcing a commercial scene.`;
+The beats are story-grounded cinematic moments only. They must not introduce unsupported biography or floral/composition instructions. No beat may contain floral recipe, inventory, focal/secondary/bridge/greenery roles, stem counts, clock positions, clusters, open arcs, Blueprint instructions, or wreath construction unless directly present in the submitted memory. Include camera and light language for visual storytelling, preserve the boundary between story discovery and downstream design, and return a concise set of 3\u20135 beats, preferably 5 when the memory supports it.
+
+Return grounding evidence with sourceDetails, interpretations, unsupportedClaims, majorUnsupportedClaims, and approvalEligible. Any major unsupported biographical claim must make approvalEligible false. Never include cherry blossoms, pussy willow, dried wheat, or sunflowers unless the client explicitly mentioned them; do not silently invent any other material. The client must approve the source-grounded story before Inventory Weaver runs.`;
 var storySchema = {
   title: "string",
   body: "string",
@@ -228,6 +254,27 @@ var storySchema = {
     collectionName: "string",
     movement: "string",
     silenceArc: ["number", "number"]
+  },
+  grounding: {
+    sourceDetails: ["string"],
+    interpretations: ["string"],
+    unsupportedClaims: ["string"],
+    majorUnsupportedClaims: ["string"],
+    approvalEligible: "boolean"
+  },
+  designSignals: {
+    emotions: ["string"],
+    emotionalMovement: "string",
+    intensity: "number",
+    atmosphere: "string",
+    sensoryEvidence: ["string"],
+    symbolicThemes: ["string"],
+    paletteDirection: ["string"],
+    materialQualities: ["string"],
+    directionalFlowCharacter: "string",
+    focalCharacter: "string",
+    negativeSpaceMeaning: "string",
+    avoidances: ["string"]
   },
   beats: [
     {
@@ -247,16 +294,18 @@ var parseJson = (value) => {
 var validateStory = (value) => {
   if (!value || typeof value !== "object") throw new Error("Claude returned a non-object Story Genesis response.");
   const story = value;
-  if (typeof story.title !== "string" || typeof story.body !== "string" || !story.metadata || !Array.isArray(story.beats)) {
+  if (typeof story.title !== "string" || typeof story.body !== "string" || !story.metadata || !story.grounding || !story.designSignals || !Array.isArray(story.beats)) {
     throw new Error("Claude Story Genesis response is missing title, body, metadata, or beats.");
   }
-  if (story.beats.length < 7 || story.beats.length > 9) throw new Error(`Claude returned ${story.beats.length} beats; Story Genesis requires 7\u20139.`);
+  if (story.beats.length < 3 || story.beats.length > 5) throw new Error(`Claude returned ${story.beats.length} beats; Story Genesis requires 3\u20135.`);
   for (let index = 0; index < story.beats.length; index += 1) {
     const beat = story.beats[index];
     if (!beat || typeof beat !== "object" || ["name", "role", "setting", "camera", "light", "prompt"].some((key) => typeof beat[key] !== "string")) {
       throw new Error(`Claude beat ${index + 1} is missing required cinematic fields.`);
     }
   }
+  const grounding = story.grounding;
+  if (!Array.isArray(grounding.sourceDetails) || !Array.isArray(grounding.interpretations) || !Array.isArray(grounding.unsupportedClaims) || !Array.isArray(grounding.majorUnsupportedClaims) || typeof grounding.approvalEligible !== "boolean") throw new Error("Claude Story Genesis grounding evidence is incomplete.");
   return story;
 };
 async function generateClaudeStory(input) {
@@ -284,7 +333,9 @@ JSON shape to return: ${JSON.stringify(storySchema)}` },
   const content = payload.choices?.[0]?.message?.content;
   const text2 = Array.isArray(content) ? content.map((part) => part.text ?? "").join("") : content;
   if (!text2) throw new Error("CometAPI Claude returned no Story Genesis content.");
-  return validateStory(parseJson(text2));
+  const story = validateStory(parseJson(text2));
+  story.grounding = validateStoryGrounding(story.grounding, story.body, story.beats, input.memory);
+  return story;
 }
 var storyGenesisProvider = { provider: "cometapi", model: DEFAULT_MODEL, endpoint: `${COMETAPI_BASE_URL}/v1/chat/completions` };
 async function generateClaudeJson(messages, maxTokens = 5e3) {
@@ -364,6 +415,7 @@ var projects = evercrafted.table("projects", {
   name: varchar("name", { length: 160 }).notNull(),
   status: projectStatusEnum("status").default("intake").notNull(),
   wreathSizeIn: numeric("wreathSizeIn", { precision: 6, scale: 2 }).default("24").notNull(),
+  floralRecipe: json("floralRecipe"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().notNull().$onUpdate(() => /* @__PURE__ */ new Date())
 });
@@ -749,12 +801,18 @@ function seeded(seed) {
 function matchScore(item, brief, role) {
   const tags = new Set([brief.primary, ...brief.secondary].map((value) => value.toLowerCase()));
   const itemTags = item.emotionTags.map((value) => value.toLowerCase());
-  const emotion = itemTags.some((tag) => tags.has(tag)) ? 3 : 0;
-  const palette = brief.palette.some((value) => [item.colorFamily, item.colorHex, item.name].filter(Boolean).some((candidate) => String(candidate).toLowerCase().includes(value.toLowerCase()))) ? 2 : 0;
+  const emotionTags = itemTags.filter((tag) => tags.has(tag));
+  const emotion = emotionTags.length ? 3 : 0;
+  const paletteNames = [item.colorFamily, item.colorHex, item.name].filter(Boolean).map((candidate) => String(candidate).toLowerCase());
+  const paletteMatches = brief.palette.filter((value) => paletteNames.some((candidate) => candidate.includes(value.toLowerCase())));
+  const palette = paletteMatches.length ? 2 : 0;
   const structural = (item.structuralRole ?? "").toLowerCase() === role ? 2 : 0;
   const approved = item.approved === false ? -5 : 1;
   const active = item.status === "active" ? 1 : -4;
-  return emotion + palette + structural + approved + active;
+  return { score: emotion + palette + structural + approved + active, emotionTags, paletteMatches, roleMatch: structural > 0, approvedMatch: approved > 0, activeMatch: active > 0 };
+}
+function scoreFloralCandidate(item, brief, role) {
+  return matchScore(item, brief, role);
 }
 function pickFlorals(items, brief, seed) {
   const random = seeded(seed);
@@ -764,9 +822,9 @@ function pickFlorals(items, brief, seed) {
     const available = items.filter((item) => !used.has(item.itemId) && item.status !== "inactive");
     const roleCandidates = role === "greenery" ? available.filter((item) => (item.structuralRole ?? "").toLowerCase().includes("green") || (item.colorFamily ?? "").toLowerCase().match(/green|olive|sage|foliage/)) : available;
     const candidates = (roleCandidates.length ? roleCandidates : role === "greenery" ? [] : available).map((item) => {
-      const score = matchScore(item, brief, role);
-      const tier = score >= 6 ? "A" : score >= 4 ? "B" : "C";
-      return { item, score, tier };
+      const match = matchScore(item, brief, role);
+      const tier = match.score >= 6 ? "A" : match.score >= 4 ? "B" : "C";
+      return { item, ...match, tier };
     }).sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name));
     const count = role === "focal" ? 1 : role === "greenery" ? 2 : 2;
     for (let index = 0; index < count && candidates.length; index++) {
@@ -774,7 +832,8 @@ function pickFlorals(items, brief, seed) {
       const chosen = candidates.splice(offset, 1)[0];
       if (!chosen) continue;
       used.add(chosen.item.itemId);
-      recipe[role].push({ ...chosen.item, tier: chosen.tier, estimatedPieces: Math.max(1, Math.round(roleTarget[role] / count)), selectionReason: `${chosen.tier} match: ${role} role, ${brief.primary} emotional signal, and ${brief.palette.join(" / ")} palette compatibility.` });
+      const reasons = [chosen.emotionTags.length ? `emotion match: ${chosen.emotionTags.join(", ")}` : `emotion bridge: ${brief.primary} through ${role}`, chosen.paletteMatches.length ? `palette match: ${chosen.paletteMatches.join(", ")}` : `palette bridge: ${brief.palette[0] ?? "the approved palette"}`, chosen.roleMatch ? `structural role: ${role}` : `supporting role: used as ${role}`, chosen.approvedMatch ? "approved inventory" : "inventory review required"];
+      recipe[role].push({ ...chosen.item, tier: chosen.tier, estimatedPieces: Math.max(1, Math.round(roleTarget[role] / count)), selectionReason: `${chosen.tier} match \xB7 ${reasons.join(" \xB7 ")}`, matchFactors: { emotionTags: chosen.emotionTags, paletteMatches: chosen.paletteMatches, roleMatch: chosen.roleMatch, approvedMatch: chosen.approvedMatch, score: chosen.score } });
     }
   }
   return { seed, recipe };
@@ -1015,12 +1074,10 @@ async function downloadCometImage(imageUrl) {
 async function submitCometTask(request) {
   const submission = buildSubmission(request);
   const created = await requestJson(submission.path, { method: "POST", body: JSON.stringify(submission.body) });
+  const imageUrl = findImageUrl(created);
+  if (imageUrl) return { taskId: "synchronous", pollPath: submission.pollPath, immediate: { taskId: "synchronous", status: "success", imageUrl, raw: created } };
   const taskId = findTaskId(created);
-  if (!taskId) {
-    const imageUrl = findImageUrl(created);
-    if (!imageUrl) throw new Error(`CometAPI returned neither a task ID nor an image URL. Response: ${summarizePayload(created)}`);
-    return { taskId: "synchronous", pollPath: submission.pollPath, immediate: { taskId: "synchronous", status: "success", imageUrl, raw: created } };
-  }
+  if (!taskId) throw new Error(`CometAPI returned neither a task ID nor an image URL. Response: ${summarizePayload(created)}`);
   return { taskId, pollPath: submission.pollPath, immediate: null };
 }
 async function pollCometTask(task, options = {}) {
@@ -1360,6 +1417,164 @@ function buildLifestyleScenePrompts(wreathPrompt, storyBeats = []) {
   ];
 }
 
+// shared/inventoryWeaver.ts
+var WEAVER_ROLE_COUNTS = { focal: 2, secondary: 2, bridge: 1, filler: 1, greenery: 1, movement: 1 };
+function roleFit(item, role) {
+  const structural = (item.structuralRole ?? "").toLowerCase();
+  if (role === "bridge") return ["secondary", "filler"].includes(structural);
+  if (role === "movement") return structural.includes("green") || /trail|fern|eucalyptus|olive|cedar|arc/i.test(`${item.name} ${item.colorFamily ?? ""}`);
+  if (role === "greenery") return structural.includes("green") || /green|foliage|eucalyptus|olive|fern|cedar/i.test(`${item.name} ${item.colorFamily ?? ""}`);
+  return structural === role;
+}
+function designEffect(role, item, brief) {
+  const form = /round|peony|hydrangea|rose|ball/i.test(item.name) ? "gathered" : /spray|branch|fern|trail|eucalyptus|olive/i.test(item.name) ? "directional" : "textural";
+  if (role === "focal") return `${form} focal presence that carries ${brief.primary.toLowerCase()} without losing the approved palette.`;
+  if (role === "movement") return `directional movement that lets the eye travel through the ${brief.formula} structure.`;
+  if (role === "greenery") return `foundation and breathing space that protects the wreath's silence arc.`;
+  if (role === "bridge") return `a quieter transition between the focal mass and supporting materials.`;
+  if (role === "filler") return `texture that gives the selected story signals a lived-in middle distance.`;
+  return `supporting form that keeps the selected focal materials emotionally legible.`;
+}
+function curateInventoryCandidates(items, brief, selections = {}, limit = 6) {
+  const chosen = new Set(Object.values(selections).flat());
+  const result = {};
+  Object.keys(WEAVER_ROLE_COUNTS).forEach((role) => {
+    const roleItems = items.filter((item) => item.status !== "inactive" && item.approved !== false && roleFit(item, role));
+    const candidates = roleItems.filter((item) => !chosen.has(item.itemId) || (selections[role] ?? []).includes(item.itemId)).map((item) => {
+      const score = scoreFloralCandidate(item, brief, role === "bridge" || role === "movement" ? role === "movement" ? "greenery" : "filler" : role);
+      const availability = item.status === "active" ? "available" : "review";
+      const substitutionStatus = score.roleMatch ? "none" : "candidate";
+      const emotion = score.emotionTags.length ? `emotion match: ${score.emotionTags.join(", ")}` : `emotion bridge: ${brief.primary}`;
+      const palette = score.paletteMatches.length ? `palette match: ${score.paletteMatches.join(", ")}` : `palette bridge: ${brief.palette[0] ?? "the approved palette"}`;
+      return {
+        itemId: item.itemId,
+        name: item.name,
+        colorHex: item.colorHex,
+        colorFamily: item.colorFamily,
+        structuralRole: item.structuralRole,
+        role,
+        emotionTags: item.emotionTags,
+        stemLengthIn: item.stemLengthIn,
+        availability,
+        substitutionStatus,
+        recommended: false,
+        selectionReason: `${emotion} \xB7 ${palette} \xB7 ${score.roleMatch ? `structural role: ${role}` : `compatible bridge into ${role}`}`,
+        designEffect: designEffect(role, item, brief),
+        matchFactors: { emotionTags: score.emotionTags, paletteMatches: score.paletteMatches, roleMatch: score.roleMatch, availability: availability === "available" },
+        _score: score.score
+      };
+    }).sort((a, b) => b._score - a._score || a.name.localeCompare(b.name)).slice(0, limit);
+    if (candidates[0]) candidates[0].recommended = true;
+    result[role] = candidates.map(({ _score: _ignored, ...candidate }) => candidate);
+  });
+  return result;
+}
+
+// shared/guidedBlueprint.ts
+var roleMap = {
+  focal: "focal",
+  secondary: "secondary",
+  bridge: "secondary",
+  filler: "filler",
+  greenery: "greenery",
+  movement: "greenery"
+};
+function buildLockedBlueprintRecipe(items, selections) {
+  const byId = new Map(items.map((item) => [item.itemId, item]));
+  const recipe = { focal: [], secondary: [], filler: [], greenery: [] };
+  selections.filter((selection) => selection.clientSelected).forEach((selection) => {
+    const item = byId.get(selection.itemId);
+    const mappedRole = roleMap[selection.role];
+    if (!item || !mappedRole) return;
+    recipe[mappedRole].push({ ...item, tier: "B", estimatedPieces: 1, selectionReason: selection.reason });
+  });
+  return recipe;
+}
+function validateLockedBlueprintRecipe(recipe) {
+  const missingRoles = Object.keys(recipe).filter((role) => recipe[role].length === 0);
+  return { complete: missingRoles.length === 0, missingRoles };
+}
+function buildGuidedBlueprint(recipe, brief, seed, sizeIn) {
+  return composeBlueprint(recipe, brief, seed, sizeIn);
+}
+
+// server/packageDownload.ts
+import { ZipArchive } from "archiver";
+import { PassThrough } from "node:stream";
+
+// shared/buildsheet.ts
+function buildPrintableBuildSheet({ blueprint, items, title = "Evercrafted memory wreath build sheet" }) {
+  const names = new Map(items.map((item) => [item.itemId, item.name]));
+  const objectRows = blueprint.objects.map((object) => `<tr><td>${object.id}</td><td>${names.get(object.asset) ?? object.asset}</td><td>${object.layer}</td><td>${object.theta}\xB0</td><td>${object.radius.toFixed(2)}</td><td>${object.rotation}\xB0</td></tr>`).join("");
+  const bands = blueprint.ringBands.map((band) => `<li><strong>${band.name}</strong> \xB7 ${band.role} \xB7 radius ${band.radius}</li>`).join("");
+  const clusters = Object.entries(blueprint.clusters).map(([name, ids]) => `<li><strong>${name}</strong> \xB7 ${ids.join(", ")}</li>`).join("");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>body{font:14px Georgia,serif;color:#26342b;max-width:900px;margin:40px auto;padding:0 28px}h1{font-size:38px;font-weight:400;margin-bottom:4px}h2{font-size:19px;font-weight:400;border-bottom:1px solid #cbbda6;padding-bottom:8px;margin-top:32px}p,li{line-height:1.6}table{border-collapse:collapse;width:100%;font:12px ui-monospace,monospace}th,td{border-bottom:1px solid #ddd3c5;padding:8px;text-align:left}th{background:#f1ece2;text-transform:uppercase;font-size:10px;letter-spacing:.08em}.meta{color:#806b4a;font:11px ui-monospace,monospace;text-transform:uppercase;letter-spacing:.08em}@media print{body{margin:0;max-width:none}.no-print{display:none}}</style></head><body><p class="meta">${blueprint.schema} \xB7 v${blueprint.version} \xB7 seed ${blueprint.seed}</p><h1>${title}</h1><p class="meta">${blueprint.emotion} \xB7 ${blueprint.formula} \xB7 ${blueprint.sizeIn} inch wreath</p><h2>Build notes</h2><p>Protect the silence arc from ${blueprint.silenceArc[0]}\xB0 to ${blueprint.silenceArc[1]}\xB0. Place greenery first, then filler, secondary, and focal anchors. Follow the ring bands and clock positions below.</p><h2>Ring bands</h2><ul>${bands}</ul><h2>Clusters</h2><ul>${clusters}</ul><h2>Placement schedule</h2><table><thead><tr><th>ID</th><th>Material</th><th>Layer</th><th>Clock angle</th><th>Radius</th><th>Rotation</th></tr></thead><tbody>${objectRows}</tbody></table><p class="meta">Generated by Evercrafted \xB7 renderer-agnostic build artifact</p></body></html>`;
+}
+function buildSheetFilename(seed) {
+  return `evercrafted-build-sheet-${seed}.html`;
+}
+
+// server/packageDownload.ts
+function buildPackageManifest(input) {
+  const items = [
+    { key: "blueprint", label: "Approved Blueprint", status: input.hasBlueprint ? "ready" : "missing", count: input.hasBlueprint ? 1 : 0, filenames: input.blueprintFilename ? [input.blueprintFilename] : [] },
+    { key: "build_sheet", label: "Build Sheet", status: input.hasBuildSheet ? "ready" : "missing", count: input.hasBuildSheet ? 1 : 0, filenames: input.buildSheetFilename ? [input.buildSheetFilename] : [] },
+    { key: "wreath", label: "Approved wreath render", status: input.wreathCount > 0 ? "ready" : "missing", count: input.wreathCount, filenames: input.wreathFilenames },
+    { key: "lifestyle_gallery", label: "Approved lifestyle gallery", status: input.lifestyleCount > 0 ? "ready" : "missing", count: input.lifestyleCount, filenames: input.lifestyleFilenames }
+  ];
+  return { items, complete: items.every((item) => item.status === "ready"), readyCount: items.filter((item) => item.status === "ready").length, totalCount: items.length };
+}
+function buildGeneratedBuildSheet(input) {
+  const blueprint = input.blueprint;
+  const items = input.selections.map((selection) => ({ itemId: selection.itemId, name: selection.name, colorHex: null, colorFamily: null, structuralRole: "", emotionTags: [], status: "active", approved: true, stemLengthIn: null }));
+  return { filename: buildSheetFilename(Number(blueprint.seed ?? 0)), html: buildPrintableBuildSheet({ blueprint, items }) };
+}
+async function downloadPackageEntries(entries) {
+  const archive = new ZipArchive({ zlib: { level: 9 } });
+  const output = new PassThrough();
+  const chunks = [];
+  const finished = new Promise((resolve, reject) => {
+    output.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    output.on("end", () => resolve(Buffer.concat(chunks)));
+    output.on("error", reject);
+    archive.on("error", reject);
+  });
+  archive.pipe(output);
+  for (const entry of entries) archive.append(entry.data, { name: entry.name });
+  await archive.finalize();
+  return finished;
+}
+
+// server/packageSnapshot.ts
+function isRecord(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+function createPackageSnapshot(input) {
+  const approvedAssets = input.assets;
+  const wreathAssets = approvedAssets.filter((asset) => asset.kind === "wreath");
+  const lifestyleAssets = approvedAssets.filter((asset) => asset.kind === "lifestyle");
+  const blueprintArtifact = approvedAssets.find((asset) => asset.kind === "blueprint_pdf");
+  const blueprintShape = input.blueprint && isRecord(input.blueprint.blueprint) ? input.blueprint.blueprint : null;
+  const recipe = isRecord(input.projectRecipe) && Array.isArray(input.projectRecipe.selections) ? input.projectRecipe.selections : [];
+  const selections = recipe.filter(isRecord).map((selection) => ({ itemId: String(selection.itemId ?? ""), name: String(selection.name ?? selection.itemId ?? "") })).filter((selection) => selection.itemId && selection.name);
+  let buildSheet = null;
+  if (blueprintShape && ["schema", "version", "sizeIn", "formula", "seed", "emotion", "silenceArc", "ringBands", "clusters", "objects"].every((key) => key in blueprintShape)) {
+    try {
+      buildSheet = buildGeneratedBuildSheet({ blueprint: blueprintShape, selections });
+    } catch {
+      buildSheet = null;
+    }
+  }
+  const blueprintFilename = input.blueprint ? `evercrafted-blueprint-v${input.blueprint.version}.json` : void 0;
+  const assetFilename = (asset, fallback) => {
+    const provenance = isRecord(asset.provenance) ? asset.provenance : {};
+    const filename = typeof provenance.filename === "string" ? provenance.filename : null;
+    return filename || fallback;
+  };
+  const manifest = buildPackageManifest({ hasBlueprint: Boolean(input.blueprint), hasBuildSheet: Boolean(buildSheet), wreathCount: wreathAssets.length, lifestyleCount: lifestyleAssets.length, wreathFilenames: wreathAssets.map((asset, index) => assetFilename(asset, `wreath-${index + 1}.png`)), lifestyleFilenames: lifestyleAssets.map((asset, index) => assetFilename(asset, `lifestyle-${index + 1}.png`)), blueprintFilename, buildSheetFilename: buildSheet?.filename ?? (blueprintArtifact ? assetFilename(blueprintArtifact, "approved-blueprint.pdf") : void 0) });
+  return { ...manifest, blueprint: input.blueprint && blueprintShape ? { id: input.blueprint.id, version: input.blueprint.version, filename: blueprintFilename, json: JSON.stringify(blueprintShape, null, 2) } : null, buildSheet, assets: approvedAssets.map((asset) => ({ id: asset.id, kind: asset.kind, filename: assetFilename(asset, `${asset.kind}-${asset.id}`), fileKey: asset.fileKey, url: asset.url })) };
+}
+
 // server/routers.ts
 var weaveInput = z3.object({ memory: z3.string().min(25).max(6e3), occasion: z3.string().min(1).max(120), honoree: z3.string().max(160).default(""), location: z3.string().max(240).default(""), whoWasThere: z3.string().max(240).default(""), timeOfDay: z3.string().min(1).max(60), guided: z3.boolean().default(false) });
 var weaveSchema = { type: "object", properties: { atmosphere: { type: "string" }, summary: { type: "string" }, story: { type: "string" }, palette: { type: "array", items: { type: "string" }, minItems: 3, maxItems: 5 } }, required: ["atmosphere", "summary", "story", "palette"], additionalProperties: false };
@@ -1372,6 +1587,24 @@ var deriveMemoryCollectionName = (memory) => {
   const compact = firstThought.replace(/\s+/g, " ");
   return compact.length > 84 ? `${compact.slice(0, 81).trimEnd()}\u2026` : compact;
 };
+var MAX_CLIENT_UPLOAD_BYTES = 12 * 1024 * 1024;
+function decodeClientUpload(base64, mimeType, filename, allowedMimeTypes) {
+  if (!allowedMimeTypes.includes(mimeType.toLowerCase())) throw new TRPCError3({ code: "BAD_REQUEST", message: `Unsupported upload type: ${mimeType}.` });
+  const buffer = Buffer.from(base64.replace(/^data:[^;]+;base64,/, ""), "base64");
+  if (!buffer.length || buffer.length > MAX_CLIENT_UPLOAD_BYTES) throw new TRPCError3({ code: "BAD_REQUEST", message: "Upload must be a valid file no larger than 12 MB." });
+  const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "").slice(0, 180) || `upload-${Date.now()}`;
+  return { buffer, safeFilename };
+}
+async function getApprovedBlueprintForProject(db, projectId) {
+  if (!db) return null;
+  const rows = await db.select().from(blueprints).where(and(eq3(blueprints.projectId, projectId), eq3(blueprints.status, "approved"))).orderBy(desc2(blueprints.createdAt)).limit(1);
+  return rows?.[0] ?? null;
+}
+async function getApprovedWreathAnchorForProject(db, projectId) {
+  if (!db) return null;
+  const rows = await db.select().from(renderAssets).where(and(eq3(renderAssets.projectId, projectId), eq3(renderAssets.kind, "wreath"), inArray(renderAssets.status, ["approved", "published"]))).orderBy(desc2(renderAssets.createdAt)).limit(1);
+  return rows?.[0] ?? null;
+}
 var storySchema2 = { type: "object", properties: { title: { type: "string" }, body: { type: "string" }, metadata: { type: "object", properties: { atmosphere: { type: "string" }, collectionName: { type: "string" }, movement: { type: "string" }, silenceArc: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 } }, required: ["atmosphere", "collectionName", "movement", "silenceArc"], additionalProperties: false }, beats: { type: "array", minItems: 7, maxItems: 9, items: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, setting: { type: "string" }, camera: { type: "string" }, light: { type: "string" }, prompt: { type: "string" } }, required: ["name", "role", "setting", "camera", "light", "prompt"], additionalProperties: false } } }, required: ["title", "body", "metadata", "beats"], additionalProperties: false };
 var isAdminUser = (user) => user.role === "admin" || user.openId === ENV.ownerOpenId;
 async function loadLookbookPresentation(db, lookbook) {
@@ -1445,6 +1678,19 @@ async function reconcileCometTask(taskRowId) {
   }
   await db.update(cometRenderTasks).set({ renderAssetId: parentAssetId, status: "review_ready", progress: 100, message: panels.length === 4 ? "4-panel grid separated into review assets" : "Render is ready for review", errorMessage: null, completedAt: /* @__PURE__ */ new Date() }).where(eq3(cometRenderTasks.id, taskRowId));
   return { taskId: taskRowId, renderAssetId: parentAssetId, status: "review_ready", url: uploaded.url };
+}
+async function loadProjectPackageSnapshot(db, projectId) {
+  if (!db) throw new TRPCError3({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+  const projectRows = await db.select().from(projects).where(eq3(projects.id, projectId)).limit(1);
+  const project = projectRows[0];
+  const blueprintRows = await db.select().from(blueprints).where(and(eq3(blueprints.projectId, projectId), eq3(blueprints.status, "approved"))).orderBy(desc2(blueprints.createdAt)).limit(1);
+  const assetRows = await db.select().from(renderAssets).where(and(eq3(renderAssets.projectId, projectId), inArray(renderAssets.kind, ["wreath", "lifestyle", "blueprint_pdf"]), inArray(renderAssets.status, ["approved", "published"]))).orderBy(asc(renderAssets.kind), asc(renderAssets.createdAt));
+  return { project, blueprint: blueprintRows[0] ?? null, assets: assetRows };
+}
+async function readSignedPackageAsset(fileKey) {
+  const response = await fetch(await storageGetSignedUrl(fileKey));
+  if (!response.ok) throw new TRPCError3({ code: "BAD_GATEWAY", message: "An approved package asset could not be retrieved." });
+  return Buffer.from(await response.arrayBuffer());
 }
 var appRouter = router({
   system: systemRouter,
@@ -1723,6 +1969,120 @@ var appRouter = router({
       const supportedFormula = ["Crescent", "Side Sweep", "Bottom Heavy", "Twin Cluster", "Classic Balanced"].includes(profile.wreathTranslation.compositionFormula) ? profile.wreathTranslation.compositionFormula : "Crescent";
       const brief = { primary: profile.emotionalCore.primaryEmotion, secondary: profile.emotionalCore.secondaryEmotions, palette: [profile.paletteSystem.dominantColor.name, ...profile.paletteSystem.supportingColors.map((color2) => color2.name)].slice(0, 5), formula: supportedFormula, silenceArc: profile.wreathTranslation.silenceArc };
       return { profileId: profileRow.id, seed: input.seed, brief, recipe: pickFlorals(items, brief, input.seed).recipe };
+    }),
+    updateWreathSize: protectedProcedure.input(z3.object({ projectId: z3.number().int().positive(), wreathSizeIn: z3.union([z3.literal(18), z3.literal(24), z3.literal(30)]) })).mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError3({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+      const rows = await db.select().from(projects).where(eq3(projects.id, input.projectId)).limit(1);
+      const project = rows[0];
+      if (!project || project.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError3({ code: "FORBIDDEN", message: "Project ownership required." });
+      await db.update(projects).set({ wreathSizeIn: String(input.wreathSizeIn), floralRecipe: null, status: "selection" }).where(eq3(projects.id, input.projectId));
+      return { projectId: input.projectId, wreathSizeIn: input.wreathSizeIn, recipeReset: true };
+    }),
+    unlockFloralRecipe: protectedProcedure.input(z3.object({ projectId: z3.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError3({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+      const rows = await db.select().from(projects).where(eq3(projects.id, input.projectId)).limit(1);
+      const project = rows[0];
+      if (!project || project.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError3({ code: "FORBIDDEN", message: "Project ownership required." });
+      const recipe = project.floralRecipe && typeof project.floralRecipe === "object" ? project.floralRecipe : null;
+      if (!recipe || recipe.recipeStatus !== "client_approved") throw new TRPCError3({ code: "PRECONDITION_FAILED", message: "Only a client-approved recipe can be revised." });
+      await db.update(projects).set({ floralRecipe: { ...recipe, recipeStatus: "draft", revisedAt: (/* @__PURE__ */ new Date()).toISOString() }, status: "selection" }).where(eq3(projects.id, input.projectId));
+      await db.update(blueprints).set({ status: "superseded" }).where(and(eq3(blueprints.projectId, input.projectId), ne(blueprints.status, "superseded")));
+      return { projectId: input.projectId, recipeStatus: "draft", blueprintInvalidated: true };
+    }),
+    guidedBlueprint: protectedProcedure.input(z3.object({ projectId: z3.number().int().positive() })).query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError3({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+      const projectRows = await db.select().from(projects).where(eq3(projects.id, input.projectId)).limit(1);
+      const project = projectRows[0];
+      if (!project || project.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError3({ code: "FORBIDDEN", message: "Project ownership required." });
+      const rows = await db.select().from(blueprints).where(eq3(blueprints.projectId, input.projectId)).orderBy(desc2(blueprints.createdAt)).limit(1);
+      return rows[0] ?? null;
+    }),
+    createGuidedBlueprint: protectedProcedure.input(z3.object({ projectId: z3.number().int().positive(), seed: z3.number().int().default(42), sizeIn: z3.union([z3.literal(18), z3.literal(24), z3.literal(30)]).default(24) })).mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError3({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+      const projectRows = await db.select().from(projects).where(eq3(projects.id, input.projectId)).limit(1);
+      const project = projectRows[0];
+      if (!project || project.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError3({ code: "FORBIDDEN", message: "Project ownership required." });
+      const storedRecipe = project.floralRecipe && typeof project.floralRecipe === "object" ? project.floralRecipe : null;
+      if (!storedRecipe || storedRecipe.recipeStatus !== "client_approved" || !Array.isArray(storedRecipe.selections)) throw new TRPCError3({ code: "PRECONDITION_FAILED", message: "Lock the Floral Recipe before composing the Blueprint." });
+      const selections = storedRecipe.selections;
+      const required = { focal: 2, secondary: 2, bridge: 1, filler: 1, greenery: 1, movement: 1 };
+      const missingRoles = Object.entries(required).filter(([role, count]) => selections.filter((selection) => selection.role === role && selection.clientSelected).length < count).map(([role]) => role);
+      if (missingRoles.length) throw new TRPCError3({ code: "BAD_REQUEST", message: `RECIPE_INCOMPLETE: missing ${missingRoles.join(", ")}.` });
+      const profileRows = await db.select().from(emotionalProfiles).where(eq3(emotionalProfiles.projectId, input.projectId)).orderBy(desc2(emotionalProfiles.version)).limit(50);
+      const profileRow = profileRows.find((row) => row.status === "approved");
+      const storyRows = await db.select().from(stories).where(and(eq3(stories.projectId, input.projectId), eq3(stories.status, "approved"))).orderBy(desc2(stories.version), desc2(stories.createdAt)).limit(1);
+      const storyRow = storyRows[0];
+      if (!profileRow || !storyRow || Number(storedRecipe.sourceEmotionalProfileVersion) !== profileRow.version || Number(storedRecipe.sourceStoryVersion) !== storyRow.version) throw new TRPCError3({ code: "PRECONDITION_FAILED", message: "The locked recipe is based on an outdated Story or Essence version. Revise and re-lock it before Blueprint composition." });
+      const profile = validateEmotionalProfile(profileRow.profile);
+      const raw = await listInventoryItems(500, 0);
+      const items = raw.map((item) => ({ itemId: item.itemId, name: item.name, colorHex: item.colorHex, colorFamily: item.colorFamily, structuralRole: item.structuralRole, emotionTags: Array.isArray(item.emotionTags) ? item.emotionTags : [], status: item.status, approved: item.approved, stemLengthIn: item.stemLengthIn ? Number(item.stemLengthIn) : null }));
+      const selectedIds = new Set(selections.filter((selection) => selection.clientSelected).map((selection) => selection.itemId));
+      const selectedItems = items.filter((item) => selectedIds.has(item.itemId) && item.status !== "inactive" && item.approved !== false);
+      if (selectedItems.length !== selectedIds.size) throw new TRPCError3({ code: "PRECONDITION_FAILED", message: "One or more locked recipe items are no longer approved or available. Revise the recipe before Blueprint composition." });
+      const formula = ["Crescent", "Side Sweep", "Bottom Heavy", "Twin Cluster", "Classic Balanced"].includes(String(storedRecipe.formula)) ? String(storedRecipe.formula) : "Crescent";
+      const brief = { primary: profile.emotionalCore.primaryEmotion, secondary: profile.emotionalCore.secondaryEmotions, palette: [profile.paletteSystem.dominantColor.name, ...profile.paletteSystem.supportingColors.map((color2) => color2.name)].slice(0, 5), formula, silenceArc: profile.wreathTranslation.silenceArc };
+      const lockedRecipe = buildLockedBlueprintRecipe(selectedItems, selections);
+      const recipeValidation = validateLockedBlueprintRecipe(lockedRecipe);
+      if (!recipeValidation.complete) throw new TRPCError3({ code: "BAD_REQUEST", message: `RECIPE_INCOMPLETE: Blueprint roles missing ${recipeValidation.missingRoles.join(", ")}.` });
+      const blueprint = buildGuidedBlueprint(lockedRecipe, brief, input.seed, input.sizeIn);
+      const validation = { ...recipeValidation, sourceStoryVersion: storyRow.version, sourceEmotionalProfileVersion: profileRow.version, selectedItemIds: Array.from(selectedIds), deterministic: true, recipeStatus: storedRecipe.recipeStatus };
+      await db.update(blueprints).set({ status: "superseded" }).where(and(eq3(blueprints.projectId, input.projectId), ne(blueprints.status, "superseded")));
+      const insert = await db.insert(blueprints).values({ projectId: input.projectId, version: 1, status: "draft", seed: input.seed, blueprint, validation }).returning({ insertId: blueprints.id });
+      return { id: Number(insert[0].insertId), projectId: input.projectId, status: "draft", blueprint, validation };
+    }),
+    approveGuidedBlueprint: protectedProcedure.input(z3.object({ projectId: z3.number().int().positive(), blueprintId: z3.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError3({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+      const projectRows = await db.select().from(projects).where(eq3(projects.id, input.projectId)).limit(1);
+      const project = projectRows[0];
+      if (!project || project.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError3({ code: "FORBIDDEN", message: "Project ownership required." });
+      const rows = await db.select().from(blueprints).where(eq3(blueprints.id, input.blueprintId)).limit(1);
+      const blueprint = rows[0];
+      if (!blueprint || blueprint.projectId !== input.projectId || blueprint.status !== "draft") throw new TRPCError3({ code: "PRECONDITION_FAILED", message: "Only the current project Blueprint draft can be approved." });
+      const recipe = project.floralRecipe && typeof project.floralRecipe === "object" ? project.floralRecipe : null;
+      if (!recipe || recipe.recipeStatus !== "client_approved") throw new TRPCError3({ code: "PRECONDITION_FAILED", message: "The Floral Recipe must remain locked before Blueprint approval." });
+      await db.update(blueprints).set({ status: "approved" }).where(eq3(blueprints.id, input.blueprintId));
+      await db.update(projects).set({ status: "render" }).where(eq3(projects.id, input.projectId));
+      return { blueprintId: input.blueprintId, projectId: input.projectId, status: "approved" };
+    }),
+    saveFloralRecipe: protectedProcedure.input(z3.object({ projectId: z3.number().int().positive(), status: z3.enum(["draft", "client_approved"]), sourceStoryVersion: z3.number().int().positive().nullable(), sourceEmotionalProfileVersion: z3.number().int().positive().nullable(), wreathSizeIn: z3.union([z3.literal(18), z3.literal(24), z3.literal(30)]), formula: z3.string().min(1).max(160), selections: z3.array(z3.object({ role: z3.string().min(1).max(40), itemId: z3.string().min(1).max(80), name: z3.string().min(1).max(180), reason: z3.string().min(1).max(1200), clientSelected: z3.boolean() })).max(40) })).mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError3({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+      const rows = await db.select().from(projects).where(eq3(projects.id, input.projectId)).limit(1);
+      const project = rows[0];
+      if (!project || project.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError3({ code: "FORBIDDEN", message: "Project ownership required." });
+      const required = { focal: 2, secondary: 2, bridge: 1, filler: 1, greenery: 1, movement: 1 };
+      if (input.status === "client_approved") for (const [role, count] of Object.entries(required)) {
+        if (input.selections.filter((selection) => selection.role === role && selection.clientSelected).length < count) throw new TRPCError3({ code: "BAD_REQUEST", message: `RECIPE_INCOMPLETE: choose ${count} ${role} material${count === 1 ? "" : "s"}.` });
+      }
+      const recipe = { recipeStatus: input.status, sourceStoryVersion: input.sourceStoryVersion, sourceEmotionalProfileVersion: input.sourceEmotionalProfileVersion, wreathSizeIn: input.wreathSizeIn, formula: input.formula, selections: input.selections, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+      await db.update(projects).set({ wreathSizeIn: String(input.wreathSizeIn), floralRecipe: recipe, status: input.status === "client_approved" ? "blueprint" : "selection" }).where(eq3(projects.id, input.projectId));
+      return { projectId: input.projectId, recipe };
+    }),
+    inventoryWeaver: protectedProcedure.input(z3.object({ projectId: z3.number().int().positive(), wreathSizeIn: z3.union([z3.literal(18), z3.literal(24), z3.literal(30)]).default(24), selections: z3.record(z3.string(), z3.array(z3.string())).default({}), limit: z3.number().int().min(3).max(6).default(6) })).query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError3({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+      const projectRows = await db.select().from(projects).where(eq3(projects.id, input.projectId)).limit(1);
+      const project = projectRows[0];
+      if (!project || project.userId !== ctx.user.id && ctx.user.role !== "admin") throw new TRPCError3({ code: "FORBIDDEN", message: "Project ownership required." });
+      const profileRows = await db.select().from(emotionalProfiles).where(eq3(emotionalProfiles.projectId, input.projectId)).orderBy(desc2(emotionalProfiles.version)).limit(50);
+      const profileRow = profileRows.find((row) => row.status === "approved");
+      if (!profileRow) throw new TRPCError3({ code: "PRECONDITION_FAILED", message: "An approved emotional profile is required before Inventory Weaver recommendations." });
+      const profile = validateEmotionalProfile(profileRow.profile);
+      const storyRows = await db.select().from(stories).where(and(eq3(stories.projectId, input.projectId), eq3(stories.status, "approved"))).orderBy(desc2(stories.version), desc2(stories.createdAt)).limit(1);
+      const story = storyRows[0];
+      const raw = await listInventoryItems(500, 0);
+      const items = raw.map((item) => ({ itemId: item.itemId, name: item.name, colorHex: item.colorHex, colorFamily: item.colorFamily, structuralRole: item.structuralRole, emotionTags: Array.isArray(item.emotionTags) ? item.emotionTags : [], status: item.status, approved: item.approved, stemLengthIn: item.stemLengthIn ? Number(item.stemLengthIn) : null }));
+      const supportedFormula = ["Crescent", "Side Sweep", "Bottom Heavy", "Twin Cluster", "Classic Balanced"].includes(profile.wreathTranslation.compositionFormula) ? profile.wreathTranslation.compositionFormula : "Crescent";
+      const storyMetadata = story?.metadata && typeof story.metadata === "object" ? story.metadata : {};
+      const storyMovement = typeof storyMetadata.movement === "string" ? storyMetadata.movement : "";
+      const brief = { primary: profile.emotionalCore.primaryEmotion, secondary: [...profile.emotionalCore.secondaryEmotions, storyMovement].filter(Boolean), palette: [profile.paletteSystem.dominantColor.name, ...profile.paletteSystem.supportingColors.map((color2) => color2.name)].slice(0, 5), formula: supportedFormula, silenceArc: profile.wreathTranslation.silenceArc };
+      const candidates = curateInventoryCandidates(items, brief, input.selections, input.limit);
+      return { projectId: input.projectId, profileVersion: profileRow.version, storyVersion: story?.version ?? null, wreathSizeIn: input.wreathSizeIn, formula: supportedFormula, candidates };
     }),
     promptFromProfile: protectedProcedure.input(z3.object({ projectId: z3.number().int().positive(), profileId: z3.number().int().positive().optional(), storyId: z3.number().int().positive(), blueprint: z3.record(z3.string(), z3.unknown()), inventoryNames: z3.record(z3.string(), z3.string()).default({}) })).mutation(async ({ ctx, input }) => {
       const db = await getDb();
@@ -2139,12 +2499,20 @@ var appRouter = router({
       const inserted = await db.insert(renderAssets).values({ projectId: input.projectId, kind: input.kind, status: "review", fileKey: uploaded.key, url: uploaded.url, provenance }).returning({ insertId: renderAssets.id });
       return { assetId: Number(inserted[0].insertId), taskId: result.taskId, status: "review", url: uploaded.url, provenance };
     }),
-    upload: adminProcedure2.input(z3.object({ projectId: z3.number().int().positive(), kind: z3.enum(["wreath", "lifestyle", "blueprint_pdf", "ecrpkg"]), filename: z3.string().min(1).max(180), mimeType: z3.string().min(3).max(120), base64: z3.string().min(20), sceneIndex: z3.number().int().min(0).max(20).optional(), sceneTitle: z3.string().max(180).optional(), prompt: z3.string().max(12e3).optional() })).mutation(async ({ input }) => {
+    upload: protectedProcedure.input(z3.object({ projectId: z3.number().int().positive(), kind: z3.enum(["wreath", "lifestyle", "blueprint_pdf", "ecrpkg"]), filename: z3.string().min(1).max(180), mimeType: z3.string().min(3).max(120), base64: z3.string().min(20), sceneIndex: z3.number().int().min(0).max(20).optional(), sceneTitle: z3.string().max(180).optional(), prompt: z3.string().max(12e3).optional() })).mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError3({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
-      const buffer = Buffer.from(input.base64.replace(/^data:[^;]+;base64,/, ""), "base64");
-      const uploaded = await storagePut(`projects/${input.projectId}/${input.kind}/${input.filename}`, buffer, input.mimeType);
-      const provenance = input.kind === "lifestyle" ? { source: "studio_upload", filename: input.filename, sceneIndex: input.sceneIndex ?? null, sceneTitle: input.sceneTitle ?? null, prompt: input.prompt ?? null, uploadedAt: (/* @__PURE__ */ new Date()).toISOString() } : { source: "studio_upload", filename: input.filename, prompt: input.prompt ?? null, uploadedAt: (/* @__PURE__ */ new Date()).toISOString() };
+      const approvedBlueprint = input.kind === "wreath" || input.kind === "lifestyle" ? await getApprovedBlueprintForProject(db, input.projectId) : null;
+      if (input.kind === "wreath" && !approvedBlueprint) throw new TRPCError3({ code: "PRECONDITION_FAILED", message: "Approve the Guided Blueprint before uploading a wreath anchor." });
+      const approvedWreathAnchor = input.kind === "lifestyle" ? await getApprovedWreathAnchorForProject(db, input.projectId) : null;
+      if (input.kind === "lifestyle" && (!approvedBlueprint || !approvedWreathAnchor)) throw new TRPCError3({ code: "PRECONDITION_FAILED", message: "Approve a wreath anchor before uploading a lifestyle scene." });
+      if (!isAdminUser(ctx.user)) {
+        const projectOwner = (await db.select().from(projects).where(eq3(projects.id, input.projectId)).limit(1))[0];
+        if (!projectOwner || projectOwner.userId !== ctx.user.id) throw new TRPCError3({ code: "FORBIDDEN", message: "You do not own this project." });
+      }
+      const { buffer, safeFilename } = decodeClientUpload(input.base64, input.mimeType, input.filename, ["image/png", "image/jpeg", "image/webp"]);
+      const uploaded = await storagePut(`projects/${input.projectId}/${input.kind}/${safeFilename}`, buffer, input.mimeType);
+      const provenance = input.kind === "lifestyle" ? { source: "studio_upload", filename: safeFilename, sceneIndex: input.sceneIndex ?? null, sceneTitle: input.sceneTitle ?? null, prompt: input.prompt ?? null, blueprintId: approvedBlueprint?.id ?? null, parentAssetId: approvedWreathAnchor?.id ?? null, uploadedAt: (/* @__PURE__ */ new Date()).toISOString() } : { source: "studio_upload", filename: safeFilename, prompt: input.prompt ?? null, blueprintId: approvedBlueprint?.id ?? null, uploadedAt: (/* @__PURE__ */ new Date()).toISOString() };
       const inserted = await db.insert(renderAssets).values({ projectId: input.projectId, kind: input.kind, status: "review", fileKey: uploaded.key, url: uploaded.url, provenance }).returning({ insertId: renderAssets.id });
       return { assetId: Number(inserted[0].insertId), key: uploaded.key, url: uploaded.url, kind: input.kind, status: "review" };
     }),
@@ -2183,6 +2551,27 @@ var appRouter = router({
       if (asset.kind === "ecrpkg" && !canUse(plan, "canPackageEcr")) throw new TRPCError3({ code: "FORBIDDEN", message: "Studio access is required for ECR packages." });
       if (asset.kind === "blueprint_pdf" && !canUse(plan, "canDownloadBlueprint")) throw new TRPCError3({ code: "FORBIDDEN", message: "Maker access is required for blueprint downloads." });
       return { url: await storageGetSignedUrl(asset.fileKey), expiresInSeconds: 900 };
+    })
+  }),
+  package: router({
+    preview: protectedProcedure.input(z3.object({ projectId: z3.number().int().positive() })).query(async ({ ctx, input }) => {
+      const db = await getDb();
+      const snapshot = await loadProjectPackageSnapshot(db, input.projectId);
+      if (!snapshot.project || snapshot.project.userId !== ctx.user.id && !isAdminUser(ctx.user)) throw new TRPCError3({ code: "FORBIDDEN", message: "You do not own this project." });
+      return createPackageSnapshot({ blueprint: snapshot.blueprint ? { id: snapshot.blueprint.id, version: snapshot.blueprint.version, blueprint: snapshot.blueprint.blueprint } : null, projectRecipe: snapshot.project.floralRecipe, assets: snapshot.assets });
+    }),
+    download: protectedProcedure.input(z3.object({ projectId: z3.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      const snapshot = await loadProjectPackageSnapshot(db, input.projectId);
+      if (!snapshot.project || snapshot.project.userId !== ctx.user.id && !isAdminUser(ctx.user)) throw new TRPCError3({ code: "FORBIDDEN", message: "You do not own this project." });
+      const packageSnapshot = createPackageSnapshot({ blueprint: snapshot.blueprint ? { id: snapshot.blueprint.id, version: snapshot.blueprint.version, blueprint: snapshot.blueprint.blueprint } : null, projectRecipe: snapshot.project.floralRecipe, assets: snapshot.assets });
+      if (!packageSnapshot.complete) throw new TRPCError3({ code: "PRECONDITION_FAILED", message: "The download package is not complete. Approve the Blueprint, build sheet, wreath render, and at least one lifestyle scene first." });
+      const entries = [{ name: packageSnapshot.blueprint.filename, data: packageSnapshot.blueprint.json }, { name: packageSnapshot.buildSheet.filename, data: packageSnapshot.buildSheet.html }];
+      for (const asset of packageSnapshot.assets) entries.push({ name: `${asset.kind}/${asset.filename}`, data: await readSignedPackageAsset(asset.fileKey) });
+      const archive = await downloadPackageEntries(entries);
+      const key = `projects/${input.projectId}/packages/evercrafted-approved-package-${Date.now()}.zip`;
+      const uploaded = await storagePut(key, archive, "application/zip");
+      return { url: uploaded.url, filename: key.split("/").pop(), expiresInSeconds: 900, manifest: packageSnapshot.items };
     })
   }),
   inventory: router({

@@ -21,6 +21,10 @@ import { buildLookbookSharePath } from "../shared/lookbookFlow";
 import { estimateCometCost } from "../shared/cometPricing";
 import { buildCometPanelProvenance, isMidjourneyGridOperation, splitCometGrid } from "./cometGrid";
 import { buildLifestyleScenePrompts } from "../shared/promptFlow";
+import { curateInventoryCandidates, type WeaverRole } from "../shared/inventoryWeaver";
+import { buildLockedBlueprintRecipe, validateLockedBlueprintRecipe, buildGuidedBlueprint, type GuidedRecipeSelection } from "../shared/guidedBlueprint";
+import { buildGeneratedBuildSheet, downloadPackageEntries } from "./packageDownload";
+import { createPackageSnapshot } from "./packageSnapshot";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 
 const weaveInput = z.object({ memory: z.string().min(25).max(6000), occasion: z.string().min(1).max(120), honoree: z.string().max(160).default(""), location: z.string().max(240).default(""), whoWasThere: z.string().max(240).default(""), timeOfDay: z.string().min(1).max(60), guided: z.boolean().default(false) });
@@ -30,6 +34,24 @@ const storyInput = z.object({ memory: z.string().min(25).max(6000), atmosphere: 
 const emotionalProfileInput = z.object({ projectId: z.number().int().positive(), intakeId: z.number().int().positive(), memory: z.string().min(25).max(6000), occasion: z.string().min(1).max(120), location: z.string().max(240).default(""), timeOfDay: z.string().min(1).max(60) });
 const memoryProjectInput = z.object({ memory: z.string().min(25).max(6000), occasion: z.string().min(1).max(120), honoree: z.string().max(160).default(""), location: z.string().max(240).default(""), whoWasThere: z.string().max(240).default(""), timeOfDay: z.string().min(1).max(60), guided: z.boolean().default(false), name: z.string().min(1).max(160).default("Memory wreath") });
 const deriveMemoryCollectionName = (memory: string) => { const firstThought = memory.trim().split(/[.!?\n]/)[0]?.trim() || "Memory wreath"; const compact = firstThought.replace(/\s+/g, " "); return compact.length > 84 ? `${compact.slice(0, 81).trimEnd()}…` : compact; };
+const MAX_CLIENT_UPLOAD_BYTES = 12 * 1024 * 1024;
+function decodeClientUpload(base64: string, mimeType: string, filename: string, allowedMimeTypes: string[]) {
+  if (!allowedMimeTypes.includes(mimeType.toLowerCase())) throw new TRPCError({ code: "BAD_REQUEST", message: `Unsupported upload type: ${mimeType}.` });
+  const buffer = Buffer.from(base64.replace(/^data:[^;]+;base64,/, ""), "base64");
+  if (!buffer.length || buffer.length > MAX_CLIENT_UPLOAD_BYTES) throw new TRPCError({ code: "BAD_REQUEST", message: "Upload must be a valid file no larger than 12 MB." });
+  const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "").slice(0, 180) || `upload-${Date.now()}`;
+  return { buffer, safeFilename };
+}
+async function getApprovedBlueprintForProject(db: Awaited<ReturnType<typeof getDb>>, projectId: number) {
+  if (!db) return null;
+  const rows = await db.select().from(blueprints).where(and(eq(blueprints.projectId, projectId), eq(blueprints.status, "approved"))).orderBy(desc(blueprints.createdAt)).limit(1);
+  return rows?.[0] ?? null;
+}
+async function getApprovedWreathAnchorForProject(db: Awaited<ReturnType<typeof getDb>>, projectId: number) {
+  if (!db) return null;
+  const rows = await db.select().from(renderAssets).where(and(eq(renderAssets.projectId, projectId), eq(renderAssets.kind, "wreath"), inArray(renderAssets.status, ["approved", "published"]))).orderBy(desc(renderAssets.createdAt)).limit(1);
+  return rows?.[0] ?? null;
+}
 const emotionalProfileResponseSchema = { type: "object", properties: { emotionalCore: { type: "object" }, paletteSystem: { type: "object" }, textureMaterial: { type: "object" }, movementEnergy: { type: "object" }, densitySpace: { type: "object" }, asymmetryComposition: { type: "object" }, lightQuality: { type: "object" }, atmosphere: { type: "object" }, wreathTranslation: { type: "object" } }, required: ["emotionalCore", "paletteSystem", "textureMaterial", "movementEnergy", "densitySpace", "asymmetryComposition", "lightQuality", "atmosphere", "wreathTranslation"], additionalProperties: true } as const;
 const storySchema = { type: "object", properties: { title: { type: "string" }, body: { type: "string" }, metadata: { type: "object", properties: { atmosphere: { type: "string" }, collectionName: { type: "string" }, movement: { type: "string" }, silenceArc: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 } }, required: ["atmosphere", "collectionName", "movement", "silenceArc"], additionalProperties: false }, beats: { type: "array", minItems: 7, maxItems: 9, items: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, setting: { type: "string" }, camera: { type: "string" }, light: { type: "string" }, prompt: { type: "string" } }, required: ["name", "role", "setting", "camera", "light", "prompt"], additionalProperties: false } } }, required: ["title", "body", "metadata", "beats"], additionalProperties: false } as const;
 
@@ -109,6 +131,21 @@ async function reconcileCometTask(taskRowId: number) {
   }
   await db.update(cometRenderTasks).set({ renderAssetId: parentAssetId, status: "review_ready", progress: 100, message: panels.length === 4 ? "4-panel grid separated into review assets" : "Render is ready for review", errorMessage: null, completedAt: new Date() }).where(eq(cometRenderTasks.id, taskRowId));
   return { taskId: taskRowId, renderAssetId: parentAssetId, status: "review_ready" as const, url: uploaded.url };
+}
+
+async function loadProjectPackageSnapshot(db: Awaited<ReturnType<typeof getDb>>, projectId: number) {
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+  const projectRows = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  const project = projectRows[0];
+  const blueprintRows = await db.select().from(blueprints).where(and(eq(blueprints.projectId, projectId), eq(blueprints.status, "approved"))).orderBy(desc(blueprints.createdAt)).limit(1);
+  const assetRows = await db.select().from(renderAssets).where(and(eq(renderAssets.projectId, projectId), inArray(renderAssets.kind, ["wreath", "lifestyle", "blueprint_pdf"]), inArray(renderAssets.status, ["approved", "published"]))).orderBy(asc(renderAssets.kind), asc(renderAssets.createdAt));
+  return { project, blueprint: blueprintRows[0] ?? null, assets: assetRows };
+}
+
+async function readSignedPackageAsset(fileKey: string) {
+  const response = await fetch(await storageGetSignedUrl(fileKey));
+  if (!response.ok) throw new TRPCError({ code: "BAD_GATEWAY", message: "An approved package asset could not be retrieved." });
+  return Buffer.from(await response.arrayBuffer());
 }
 
 export const appRouter = router({
@@ -227,6 +264,61 @@ export const appRouter = router({
     }),
     floralsFromProfile: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), profileId: z.number().int().positive().optional(), seed: z.number().int().default(42) })).mutation(async ({ ctx, input }) => {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." }); const projectRows = await db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1); if (!projectRows[0] || (projectRows[0].userId !== ctx.user.id && ctx.user.role !== "admin")) throw new TRPCError({ code: "FORBIDDEN", message: "Project ownership required." }); const profileRows = await db.select().from(emotionalProfiles).where(eq(emotionalProfiles.projectId, input.projectId)).orderBy(desc(emotionalProfiles.version)).limit(50); const profileRow = profileRows.find((row) => row.status === "approved"); if (!profileRow) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "An approved emotional profile is required before floral mapping." }); const profile = validateEmotionalProfile(profileRow.profile); const raw = await listInventoryItems(500, 0); const items: FloralItem[] = raw.map((item) => ({ itemId: item.itemId, name: item.name, colorHex: item.colorHex, colorFamily: item.colorFamily, structuralRole: item.structuralRole, emotionTags: Array.isArray(item.emotionTags) ? item.emotionTags as string[] : [], status: item.status, approved: item.approved, stemLengthIn: item.stemLengthIn ? Number(item.stemLengthIn) : null })); const supportedFormula = ["Crescent", "Side Sweep", "Bottom Heavy", "Twin Cluster", "Classic Balanced"].includes(profile.wreathTranslation.compositionFormula) ? profile.wreathTranslation.compositionFormula as "Crescent" | "Side Sweep" | "Bottom Heavy" | "Twin Cluster" | "Classic Balanced" : "Crescent"; const brief = { primary: profile.emotionalCore.primaryEmotion, secondary: profile.emotionalCore.secondaryEmotions, palette: [profile.paletteSystem.dominantColor.name, ...profile.paletteSystem.supportingColors.map((color) => color.name)].slice(0, 5), formula: supportedFormula, silenceArc: profile.wreathTranslation.silenceArc }; return { profileId: profileRow.id, seed: input.seed, brief, recipe: pickFlorals(items, brief, input.seed).recipe };
+    }),
+    updateWreathSize: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), wreathSizeIn: z.union([z.literal(18), z.literal(24), z.literal(30)]) })).mutation(async ({ ctx, input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." }); const rows = await db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1); const project = rows[0]; if (!project || (project.userId !== ctx.user.id && ctx.user.role !== "admin")) throw new TRPCError({ code: "FORBIDDEN", message: "Project ownership required." }); await db.update(projects).set({ wreathSizeIn: String(input.wreathSizeIn), floralRecipe: null, status: "selection" }).where(eq(projects.id, input.projectId)); return { projectId: input.projectId, wreathSizeIn: input.wreathSizeIn, recipeReset: true }; }),
+    unlockFloralRecipe: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+      const rows = await db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1); const project = rows[0];
+      if (!project || (project.userId !== ctx.user.id && ctx.user.role !== "admin")) throw new TRPCError({ code: "FORBIDDEN", message: "Project ownership required." });
+      const recipe = project.floralRecipe && typeof project.floralRecipe === "object" ? project.floralRecipe as Record<string, unknown> : null;
+      if (!recipe || recipe.recipeStatus !== "client_approved") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Only a client-approved recipe can be revised." });
+      await db.update(projects).set({ floralRecipe: { ...recipe, recipeStatus: "draft", revisedAt: new Date().toISOString() }, status: "selection" }).where(eq(projects.id, input.projectId));
+      await db.update(blueprints).set({ status: "superseded" }).where(and(eq(blueprints.projectId, input.projectId), ne(blueprints.status, "superseded")));
+      return { projectId: input.projectId, recipeStatus: "draft" as const, blueprintInvalidated: true };
+    }),
+    guidedBlueprint: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+      const projectRows = await db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1); const project = projectRows[0];
+      if (!project || (project.userId !== ctx.user.id && ctx.user.role !== "admin")) throw new TRPCError({ code: "FORBIDDEN", message: "Project ownership required." });
+      const rows = await db.select().from(blueprints).where(eq(blueprints.projectId, input.projectId)).orderBy(desc(blueprints.createdAt)).limit(1); return rows[0] ?? null;
+    }),
+    createGuidedBlueprint: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), seed: z.number().int().default(42), sizeIn: z.union([z.literal(18), z.literal(24), z.literal(30)]).default(24) })).mutation(async ({ ctx, input }) => {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+      const projectRows = await db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1); const project = projectRows[0];
+      if (!project || (project.userId !== ctx.user.id && ctx.user.role !== "admin")) throw new TRPCError({ code: "FORBIDDEN", message: "Project ownership required." });
+      const storedRecipe = project.floralRecipe && typeof project.floralRecipe === "object" ? project.floralRecipe as Record<string, unknown> : null;
+      if (!storedRecipe || storedRecipe.recipeStatus !== "client_approved" || !Array.isArray(storedRecipe.selections)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Lock the Floral Recipe before composing the Blueprint." });
+      const selections = storedRecipe.selections as GuidedRecipeSelection[]; const required = { focal: 2, secondary: 2, bridge: 1, filler: 1, greenery: 1, movement: 1 } as Record<string, number>;
+      const missingRoles = Object.entries(required).filter(([role, count]) => selections.filter((selection) => selection.role === role && selection.clientSelected).length < count).map(([role]) => role);
+      if (missingRoles.length) throw new TRPCError({ code: "BAD_REQUEST", message: `RECIPE_INCOMPLETE: missing ${missingRoles.join(", ")}.` });
+      const profileRows = await db.select().from(emotionalProfiles).where(eq(emotionalProfiles.projectId, input.projectId)).orderBy(desc(emotionalProfiles.version)).limit(50); const profileRow = profileRows.find((row) => row.status === "approved");
+      const storyRows = await db.select().from(stories).where(and(eq(stories.projectId, input.projectId), eq(stories.status, "approved"))).orderBy(desc(stories.version), desc(stories.createdAt)).limit(1); const storyRow = storyRows[0];
+      if (!profileRow || !storyRow || Number(storedRecipe.sourceEmotionalProfileVersion) !== profileRow.version || Number(storedRecipe.sourceStoryVersion) !== storyRow.version) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "The locked recipe is based on an outdated Story or Essence version. Revise and re-lock it before Blueprint composition." });
+      const profile = validateEmotionalProfile(profileRow.profile); const raw = await listInventoryItems(500, 0); const items: FloralItem[] = raw.map((item) => ({ itemId: item.itemId, name: item.name, colorHex: item.colorHex, colorFamily: item.colorFamily, structuralRole: item.structuralRole, emotionTags: Array.isArray(item.emotionTags) ? item.emotionTags as string[] : [], status: item.status, approved: item.approved, stemLengthIn: item.stemLengthIn ? Number(item.stemLengthIn) : null }));
+      const selectedIds = new Set(selections.filter((selection) => selection.clientSelected).map((selection) => selection.itemId)); const selectedItems = items.filter((item) => selectedIds.has(item.itemId) && item.status !== "inactive" && item.approved !== false); if (selectedItems.length !== selectedIds.size) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "One or more locked recipe items are no longer approved or available. Revise the recipe before Blueprint composition." });
+      const formula = ["Crescent", "Side Sweep", "Bottom Heavy", "Twin Cluster", "Classic Balanced"].includes(String(storedRecipe.formula)) ? String(storedRecipe.formula) as "Crescent" | "Side Sweep" | "Bottom Heavy" | "Twin Cluster" | "Classic Balanced" : "Crescent"; const brief = { primary: profile.emotionalCore.primaryEmotion, secondary: profile.emotionalCore.secondaryEmotions, palette: [profile.paletteSystem.dominantColor.name, ...profile.paletteSystem.supportingColors.map((color) => color.name)].slice(0, 5), formula, silenceArc: profile.wreathTranslation.silenceArc }; const lockedRecipe = buildLockedBlueprintRecipe(selectedItems, selections); const recipeValidation = validateLockedBlueprintRecipe(lockedRecipe); if (!recipeValidation.complete) throw new TRPCError({ code: "BAD_REQUEST", message: `RECIPE_INCOMPLETE: Blueprint roles missing ${recipeValidation.missingRoles.join(", ")}.` }); const blueprint = buildGuidedBlueprint(lockedRecipe, brief, input.seed, input.sizeIn); const validation = { ...recipeValidation, sourceStoryVersion: storyRow.version, sourceEmotionalProfileVersion: profileRow.version, selectedItemIds: Array.from(selectedIds), deterministic: true, recipeStatus: storedRecipe.recipeStatus };
+      await db.update(blueprints).set({ status: "superseded" }).where(and(eq(blueprints.projectId, input.projectId), ne(blueprints.status, "superseded"))); const insert = await db.insert(blueprints).values({ projectId: input.projectId, version: 1, status: "draft", seed: input.seed, blueprint, validation }).returning({ insertId: blueprints.id }); return { id: Number(insert[0].insertId), projectId: input.projectId, status: "draft" as const, blueprint, validation };
+    }),
+    approveGuidedBlueprint: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), blueprintId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." }); const projectRows = await db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1); const project = projectRows[0]; if (!project || (project.userId !== ctx.user.id && ctx.user.role !== "admin")) throw new TRPCError({ code: "FORBIDDEN", message: "Project ownership required." }); const rows = await db.select().from(blueprints).where(eq(blueprints.id, input.blueprintId)).limit(1); const blueprint = rows[0]; if (!blueprint || blueprint.projectId !== input.projectId || blueprint.status !== "draft") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Only the current project Blueprint draft can be approved." }); const recipe = project.floralRecipe && typeof project.floralRecipe === "object" ? project.floralRecipe as Record<string, unknown> : null; if (!recipe || recipe.recipeStatus !== "client_approved") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "The Floral Recipe must remain locked before Blueprint approval." }); await db.update(blueprints).set({ status: "approved" }).where(eq(blueprints.id, input.blueprintId)); await db.update(projects).set({ status: "render" }).where(eq(projects.id, input.projectId)); return { blueprintId: input.blueprintId, projectId: input.projectId, status: "approved" as const };
+    }),
+    saveFloralRecipe: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), status: z.enum(["draft", "client_approved"]), sourceStoryVersion: z.number().int().positive().nullable(), sourceEmotionalProfileVersion: z.number().int().positive().nullable(), wreathSizeIn: z.union([z.literal(18), z.literal(24), z.literal(30)]), formula: z.string().min(1).max(160), selections: z.array(z.object({ role: z.string().min(1).max(40), itemId: z.string().min(1).max(80), name: z.string().min(1).max(180), reason: z.string().min(1).max(1200), clientSelected: z.boolean() })).max(40) })).mutation(async ({ ctx, input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." }); const rows = await db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1); const project = rows[0]; if (!project || (project.userId !== ctx.user.id && ctx.user.role !== "admin")) throw new TRPCError({ code: "FORBIDDEN", message: "Project ownership required." }); const required = { focal: 2, secondary: 2, bridge: 1, filler: 1, greenery: 1, movement: 1 } as Record<string, number>; if (input.status === "client_approved") for (const [role, count] of Object.entries(required)) { if (input.selections.filter((selection) => selection.role === role && selection.clientSelected).length < count) throw new TRPCError({ code: "BAD_REQUEST", message: `RECIPE_INCOMPLETE: choose ${count} ${role} material${count === 1 ? "" : "s"}.` }); } const recipe = { recipeStatus: input.status, sourceStoryVersion: input.sourceStoryVersion, sourceEmotionalProfileVersion: input.sourceEmotionalProfileVersion, wreathSizeIn: input.wreathSizeIn, formula: input.formula, selections: input.selections, updatedAt: new Date().toISOString() }; await db.update(projects).set({ wreathSizeIn: String(input.wreathSizeIn), floralRecipe: recipe, status: input.status === "client_approved" ? "blueprint" : "selection" }).where(eq(projects.id, input.projectId)); return { projectId: input.projectId, recipe }; }),
+    inventoryWeaver: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), wreathSizeIn: z.union([z.literal(18), z.literal(24), z.literal(30)]).default(24), selections: z.record(z.string(), z.array(z.string())).default({}), limit: z.number().int().min(3).max(6).default(6) })).query(async ({ ctx, input }) => {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+      const projectRows = await db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1); const project = projectRows[0];
+      if (!project || (project.userId !== ctx.user.id && ctx.user.role !== "admin")) throw new TRPCError({ code: "FORBIDDEN", message: "Project ownership required." });
+      const profileRows = await db.select().from(emotionalProfiles).where(eq(emotionalProfiles.projectId, input.projectId)).orderBy(desc(emotionalProfiles.version)).limit(50); const profileRow = profileRows.find((row) => row.status === "approved");
+      if (!profileRow) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "An approved emotional profile is required before Inventory Weaver recommendations." });
+      const profile = validateEmotionalProfile(profileRow.profile);
+      const storyRows = await db.select().from(stories).where(and(eq(stories.projectId, input.projectId), eq(stories.status, "approved"))).orderBy(desc(stories.version), desc(stories.createdAt)).limit(1); const story = storyRows[0];
+      const raw = await listInventoryItems(500, 0);
+      const items: FloralItem[] = raw.map((item) => ({ itemId: item.itemId, name: item.name, colorHex: item.colorHex, colorFamily: item.colorFamily, structuralRole: item.structuralRole, emotionTags: Array.isArray(item.emotionTags) ? item.emotionTags as string[] : [], status: item.status, approved: item.approved, stemLengthIn: item.stemLengthIn ? Number(item.stemLengthIn) : null }));
+      const supportedFormula = ["Crescent", "Side Sweep", "Bottom Heavy", "Twin Cluster", "Classic Balanced"].includes(profile.wreathTranslation.compositionFormula) ? profile.wreathTranslation.compositionFormula as "Crescent" | "Side Sweep" | "Bottom Heavy" | "Twin Cluster" | "Classic Balanced" : "Crescent";
+      const storyMetadata = story?.metadata && typeof story.metadata === "object" ? story.metadata as Record<string, unknown> : {};
+      const storyMovement = typeof storyMetadata.movement === "string" ? storyMetadata.movement : "";
+      const brief = { primary: profile.emotionalCore.primaryEmotion, secondary: [...profile.emotionalCore.secondaryEmotions, storyMovement].filter(Boolean), palette: [profile.paletteSystem.dominantColor.name, ...profile.paletteSystem.supportingColors.map((color) => color.name)].slice(0, 5), formula: supportedFormula, silenceArc: profile.wreathTranslation.silenceArc };
+      const candidates = curateInventoryCandidates(items, brief, input.selections as Partial<Record<WeaverRole, string[]>>, input.limit);
+      return { projectId: input.projectId, profileVersion: profileRow.version, storyVersion: story?.version ?? null, wreathSizeIn: input.wreathSizeIn, formula: supportedFormula, candidates };
     }),
     promptFromProfile: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), profileId: z.number().int().positive().optional(), storyId: z.number().int().positive(), blueprint: z.record(z.string(), z.unknown()), inventoryNames: z.record(z.string(), z.string()).default({}) })).mutation(async ({ ctx, input }) => {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." }); const projectRows = await db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1); if (!projectRows[0] || (projectRows[0].userId !== ctx.user.id && ctx.user.role !== "admin")) throw new TRPCError({ code: "FORBIDDEN", message: "Project ownership required." }); const profileRows = await db.select().from(emotionalProfiles).where(eq(emotionalProfiles.projectId, input.projectId)).orderBy(desc(emotionalProfiles.version)).limit(50); const storyRows = await db.select().from(stories).where(eq(stories.id, input.storyId)).limit(1); const profileRow = profileRows.find((row) => row.status === "approved"); const storyRow = storyRows[0]; if (!profileRow) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "An approved emotional profile is required before prompt compilation." }); if (!storyRow || storyRow.projectId !== input.projectId || storyRow.emotionalProfileId !== profileRow.id || storyRow.status !== "approved") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "An approved Story Genesis output is required before prompt compilation." }); validateEmotionalProfile(profileRow.profile); const prompts = compileMidjourneyPrompt(input.blueprint as Parameters<typeof compileMidjourneyPrompt>[0], input.inventoryNames); return { profileId: profileRow.id, storyId: input.storyId, prompts };
@@ -376,11 +468,16 @@ export const appRouter = router({
       const inserted = await db.insert(renderAssets).values({ projectId: input.projectId, kind: input.kind, status: "review", fileKey: uploaded.key, url: uploaded.url, provenance }).returning({ insertId: renderAssets.id });
       return { assetId: Number(inserted[0].insertId), taskId: result.taskId, status: "review" as const, url: uploaded.url, provenance };
     }),
-    upload: adminProcedure.input(z.object({ projectId: z.number().int().positive(), kind: z.enum(["wreath", "lifestyle", "blueprint_pdf", "ecrpkg"]), filename: z.string().min(1).max(180), mimeType: z.string().min(3).max(120), base64: z.string().min(20), sceneIndex: z.number().int().min(0).max(20).optional(), sceneTitle: z.string().max(180).optional(), prompt: z.string().max(12000).optional() })).mutation(async ({ input }) => {
-      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
-      const buffer = Buffer.from(input.base64.replace(/^data:[^;]+;base64,/, ""), "base64");
-      const uploaded = await storagePut(`projects/${input.projectId}/${input.kind}/${input.filename}`, buffer, input.mimeType);
-      const provenance = input.kind === "lifestyle" ? { source: "studio_upload", filename: input.filename, sceneIndex: input.sceneIndex ?? null, sceneTitle: input.sceneTitle ?? null, prompt: input.prompt ?? null, uploadedAt: new Date().toISOString() } : { source: "studio_upload", filename: input.filename, prompt: input.prompt ?? null, uploadedAt: new Date().toISOString() };
+    upload: protectedProcedure.input(z.object({ projectId: z.number().int().positive(), kind: z.enum(["wreath", "lifestyle", "blueprint_pdf", "ecrpkg"]), filename: z.string().min(1).max(180), mimeType: z.string().min(3).max(120), base64: z.string().min(20), sceneIndex: z.number().int().min(0).max(20).optional(), sceneTitle: z.string().max(180).optional(), prompt: z.string().max(12000).optional() })).mutation(async ({ ctx, input }) => {
+       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable." });
+       const approvedBlueprint = input.kind === "wreath" || input.kind === "lifestyle" ? await getApprovedBlueprintForProject(db, input.projectId) : null;
+       if (input.kind === "wreath" && !approvedBlueprint) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Approve the Guided Blueprint before uploading a wreath anchor." });
+       const approvedWreathAnchor = input.kind === "lifestyle" ? await getApprovedWreathAnchorForProject(db, input.projectId) : null;
+       if (input.kind === "lifestyle" && (!approvedBlueprint || !approvedWreathAnchor)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Approve a wreath anchor before uploading a lifestyle scene." });
+       if (!isAdminUser(ctx.user)) { const projectOwner = (await db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1))[0]; if (!projectOwner || projectOwner.userId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "You do not own this project." }); }
+      const { buffer, safeFilename } = decodeClientUpload(input.base64, input.mimeType, input.filename, ["image/png", "image/jpeg", "image/webp"]);
+      const uploaded = await storagePut(`projects/${input.projectId}/${input.kind}/${safeFilename}`, buffer, input.mimeType);
+      const provenance = input.kind === "lifestyle" ? { source: "studio_upload", filename: safeFilename, sceneIndex: input.sceneIndex ?? null, sceneTitle: input.sceneTitle ?? null, prompt: input.prompt ?? null, blueprintId: approvedBlueprint?.id ?? null, parentAssetId: approvedWreathAnchor?.id ?? null, uploadedAt: new Date().toISOString() } : { source: "studio_upload", filename: safeFilename, prompt: input.prompt ?? null, blueprintId: approvedBlueprint?.id ?? null, uploadedAt: new Date().toISOString() };
       const inserted = await db.insert(renderAssets).values({ projectId: input.projectId, kind: input.kind, status: "review", fileKey: uploaded.key, url: uploaded.url, provenance }).returning({ insertId: renderAssets.id });
       return { assetId: Number(inserted[0].insertId), key: uploaded.key, url: uploaded.url, kind: input.kind, status: "review" as const };
     }),
@@ -412,6 +509,25 @@ export const appRouter = router({
       if (asset.kind === "ecrpkg" && !canUse(plan, "canPackageEcr")) throw new TRPCError({ code: "FORBIDDEN", message: "Studio access is required for ECR packages." });
       if (asset.kind === "blueprint_pdf" && !canUse(plan, "canDownloadBlueprint")) throw new TRPCError({ code: "FORBIDDEN", message: "Maker access is required for blueprint downloads." });
       return { url: await storageGetSignedUrl(asset.fileKey), expiresInSeconds: 900 };
+    }),
+  }),
+  package: router({
+    preview: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      const db = await getDb(); const snapshot = await loadProjectPackageSnapshot(db, input.projectId);
+      if (!snapshot.project || (snapshot.project.userId !== ctx.user.id && !isAdminUser(ctx.user))) throw new TRPCError({ code: "FORBIDDEN", message: "You do not own this project." });
+      return createPackageSnapshot({ blueprint: snapshot.blueprint ? { id: snapshot.blueprint.id, version: snapshot.blueprint.version, blueprint: snapshot.blueprint.blueprint } : null, projectRecipe: snapshot.project.floralRecipe, assets: snapshot.assets });
+    }),
+    download: protectedProcedure.input(z.object({ projectId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const db = await getDb(); const snapshot = await loadProjectPackageSnapshot(db, input.projectId);
+      if (!snapshot.project || (snapshot.project.userId !== ctx.user.id && !isAdminUser(ctx.user))) throw new TRPCError({ code: "FORBIDDEN", message: "You do not own this project." });
+      const packageSnapshot = createPackageSnapshot({ blueprint: snapshot.blueprint ? { id: snapshot.blueprint.id, version: snapshot.blueprint.version, blueprint: snapshot.blueprint.blueprint } : null, projectRecipe: snapshot.project.floralRecipe, assets: snapshot.assets });
+      if (!packageSnapshot.complete) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "The download package is not complete. Approve the Blueprint, build sheet, wreath render, and at least one lifestyle scene first." });
+      const entries: Array<{ name: string; data: Buffer | string }> = [{ name: packageSnapshot.blueprint!.filename, data: packageSnapshot.blueprint!.json }, { name: packageSnapshot.buildSheet!.filename, data: packageSnapshot.buildSheet!.html }];
+      for (const asset of packageSnapshot.assets) entries.push({ name: `${asset.kind}/${asset.filename}`, data: await readSignedPackageAsset(asset.fileKey) });
+      const archive = await downloadPackageEntries(entries);
+      const key = `projects/${input.projectId}/packages/evercrafted-approved-package-${Date.now()}.zip`;
+      const uploaded = await storagePut(key, archive, "application/zip");
+      return { url: uploaded.url, filename: key.split("/").pop()!, expiresInSeconds: 900, manifest: packageSnapshot.items };
     }),
   }),
   inventory: router({

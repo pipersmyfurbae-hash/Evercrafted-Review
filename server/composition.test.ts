@@ -35,6 +35,15 @@ describe("composition primitives", () => {
     expect(result.greenery).toHaveLength(0);
   });
 
+  it("explains each selected stem with item-specific match factors", () => {
+    const selected = Object.values(pickFlorals(items, brief, 42).recipe).flat();
+    expect(selected.length).toBeGreaterThan(0);
+    expect(selected.every((item) => item.selectionReason.includes("match") || item.selectionReason.includes("bridge"))).toBe(true);
+    expect(new Set(selected.map((item) => item.selectionReason)).size).toBeGreaterThan(1);
+    expect(selected.some((item) => item.selectionReason.includes("emotion match:"))).toBe(true);
+    expect(selected.some((item) => item.selectionReason.includes("palette match:") || item.selectionReason.includes("palette bridge:"))).toBe(true);
+  });
+
   it("compiles objects into clock positions and preserves the silence arc", () => {
     const recipe = pickFlorals(items, brief, 42).recipe;
     const blueprint = composeBlueprint(recipe, brief, 42);

@@ -125,12 +125,10 @@ type CometSubmission = { taskId: string; pollPath: (taskId: string) => string; i
 export async function submitCometTask(request: CometRenderRequest): Promise<CometSubmission> {
   const submission = buildSubmission(request);
   const created = await requestJson(submission.path, { method: "POST", body: JSON.stringify(submission.body) });
+  const imageUrl = findImageUrl(created);
+  if (imageUrl) return { taskId: "synchronous", pollPath: submission.pollPath, immediate: { taskId: "synchronous", status: "success", imageUrl, raw: created } };
   const taskId = findTaskId(created);
-  if (!taskId) {
-    const imageUrl = findImageUrl(created);
-    if (!imageUrl) throw new Error(`CometAPI returned neither a task ID nor an image URL. Response: ${summarizePayload(created)}`);
-    return { taskId: "synchronous", pollPath: submission.pollPath, immediate: { taskId: "synchronous", status: "success", imageUrl, raw: created } };
-  }
+  if (!taskId) throw new Error(`CometAPI returned neither a task ID nor an image URL. Response: ${summarizePayload(created)}`);
   return { taskId, pollPath: submission.pollPath, immediate: null };
 }
 

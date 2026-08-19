@@ -29,6 +29,14 @@ describe("CometAPI render adapter", () => {
     expect(body.prompt).toBe("A wreath in a quiet room --raw --exp 5 --q 2 --chaos 10 --stylize 125 --v 7");
   });
 
+  it("treats an immediate provider image URL as a completed render", async () => {
+    process.env.COMETAPI_API_KEY = "test-key";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({ result: "https://cdn.example/immediate-floral.png" }), { status: 200 }));
+    const result = await generateCometRender({ operation: "imagine", prompt: "Immediate floral wreath" }, { pollIntervalMs: 0, maxPolls: 1 });
+    expect(result).toMatchObject({ taskId: "synchronous", status: "success", imageUrl: "https://cdn.example/immediate-floral.png" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("recognizes the live CometAPI result task ID and finish-time response", async () => {
     process.env.COMETAPI_API_KEY = "test-key";
     vi.spyOn(globalThis, "fetch")

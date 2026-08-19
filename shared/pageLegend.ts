@@ -6,6 +6,7 @@ export type PageLegendEntry = {
 };
 
 export const workspacePageLegend: PageLegendEntry[] = [
+  { label: "Guided journey", detail: "Memory to wreath", href: "/guided" },
   { label: "Workspace", detail: "Memory-to-wreath studio", href: "/workspace", active: true },
   { label: "Memory intake", detail: "Start a new story", href: "/" },
   { label: "Inventory", detail: "Botanical catalog", href: "/admin/inventory" },

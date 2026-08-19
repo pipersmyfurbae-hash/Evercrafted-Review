@@ -1,0 +1,1 @@
+ALTER TABLE "evercrafted"."projects" ADD COLUMN "floralRecipe" json;

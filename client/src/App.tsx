@@ -8,6 +8,7 @@ import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Admin from "./pages/Admin";
 import Workspace from "@/pages/Workspace";
+import GuidedJourney from "@/pages/GuidedJourney";
 import CollectionStudio from "@/pages/CollectionStudio";
 import PhotoEdits from "@/pages/PhotoEdits";
 import Pricing from "./pages/Pricing";
@@ -25,6 +26,7 @@ function Router() {
       <Route path={"/admin/inventory"} component={Admin} />
       <Route path={"/admin/signature-wreaths"} component={SignatureAdmin} />
       <Route path={"/workspace"} component={Workspace} />
+      <Route path={"/guided"} component={GuidedJourney} />
       <Route path={"/collection-studio"} component={CollectionStudio} />
       <Route path={"/photo-edits"} component={PhotoEdits} />
       <Route path={"/plans"} component={Pricing} />

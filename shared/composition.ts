@@ -30,12 +30,19 @@ function seeded(seed: number) {
 function matchScore(item: FloralItem, brief: EmotionalBrief, role: string) {
   const tags = new Set([brief.primary, ...brief.secondary].map((value) => value.toLowerCase()));
   const itemTags = item.emotionTags.map((value) => value.toLowerCase());
-  const emotion = itemTags.some((tag) => tags.has(tag)) ? 3 : 0;
-  const palette = brief.palette.some((value) => [item.colorFamily, item.colorHex, item.name].filter(Boolean).some((candidate) => String(candidate).toLowerCase().includes(value.toLowerCase()))) ? 2 : 0;
+  const emotionTags = itemTags.filter((tag) => tags.has(tag));
+  const emotion = emotionTags.length ? 3 : 0;
+  const paletteNames = [item.colorFamily, item.colorHex, item.name].filter(Boolean).map((candidate) => String(candidate).toLowerCase());
+  const paletteMatches = brief.palette.filter((value) => paletteNames.some((candidate) => candidate.includes(value.toLowerCase())));
+  const palette = paletteMatches.length ? 2 : 0;
   const structural = (item.structuralRole ?? "").toLowerCase() === role ? 2 : 0;
   const approved = item.approved === false ? -5 : 1;
   const active = item.status === "active" ? 1 : -4;
-  return emotion + palette + structural + approved + active;
+  return { score: emotion + palette + structural + approved + active, emotionTags, paletteMatches, roleMatch: structural > 0, approvedMatch: approved > 0, activeMatch: active > 0 };
+}
+
+export function scoreFloralCandidate(item: FloralItem, brief: EmotionalBrief, role: string) {
+  return matchScore(item, brief, role);
 }
 
 export function pickFlorals(items: FloralItem[], brief: EmotionalBrief, seed: number) {
@@ -48,9 +55,9 @@ export function pickFlorals(items: FloralItem[], brief: EmotionalBrief, seed: nu
       ? available.filter((item) => (item.structuralRole ?? "").toLowerCase().includes("green") || (item.colorFamily ?? "").toLowerCase().match(/green|olive|sage|foliage/))
       : available;
     const candidates = (roleCandidates.length ? roleCandidates : role === "greenery" ? [] : available).map((item) => {
-      const score = matchScore(item, brief, role);
-      const tier = score >= 6 ? "A" : score >= 4 ? "B" : "C";
-      return { item, score, tier };
+      const match = matchScore(item, brief, role);
+      const tier = match.score >= 6 ? "A" : match.score >= 4 ? "B" : "C";
+      return { item, ...match, tier };
     }).sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name));
     const count = role === "focal" ? 1 : role === "greenery" ? 2 : 2;
     for (let index = 0; index < count && candidates.length; index++) {
@@ -58,7 +65,8 @@ export function pickFlorals(items: FloralItem[], brief: EmotionalBrief, seed: nu
       const chosen = candidates.splice(offset, 1)[0];
       if (!chosen) continue;
       used.add(chosen.item.itemId);
-      recipe[role].push({ ...chosen.item, tier: chosen.tier as "A" | "B" | "C", estimatedPieces: Math.max(1, Math.round(roleTarget[role] / count)), selectionReason: `${chosen.tier} match: ${role} role, ${brief.primary} emotional signal, and ${brief.palette.join(" / ")} palette compatibility.` } as FloralItem & { tier: "A" | "B" | "C"; estimatedPieces: number; selectionReason: string });
+      const reasons = [chosen.emotionTags.length ? `emotion match: ${chosen.emotionTags.join(", ")}` : `emotion bridge: ${brief.primary} through ${role}`, chosen.paletteMatches.length ? `palette match: ${chosen.paletteMatches.join(", ")}` : `palette bridge: ${brief.palette[0] ?? "the approved palette"}`, chosen.roleMatch ? `structural role: ${role}` : `supporting role: used as ${role}`, chosen.approvedMatch ? "approved inventory" : "inventory review required"];
+      recipe[role].push({ ...chosen.item, tier: chosen.tier as "A" | "B" | "C", estimatedPieces: Math.max(1, Math.round(roleTarget[role] / count)), selectionReason: `${chosen.tier} match · ${reasons.join(" · ")}`, matchFactors: { emotionTags: chosen.emotionTags, paletteMatches: chosen.paletteMatches, roleMatch: chosen.roleMatch, approvedMatch: chosen.approvedMatch, score: chosen.score } } as FloralItem & { tier: "A" | "B" | "C"; estimatedPieces: number; selectionReason: string; matchFactors: { emotionTags: string[]; paletteMatches: string[]; roleMatch: boolean; approvedMatch: boolean; score: number } });
     }
   }
   return { seed, recipe };
