@@ -210,227 +210,6 @@ var systemRouter = router({
   })
 });
 
-// server/_core/llm.ts
-var ensureArray = (value) => Array.isArray(value) ? value : [value];
-var normalizeContentPart = (part) => {
-  if (typeof part === "string") {
-    return { type: "text", text: part };
-  }
-  if (part.type === "text") {
-    return part;
-  }
-  if (part.type === "image_url") {
-    return part;
-  }
-  if (part.type === "file_url") {
-    return part;
-  }
-  throw new Error("Unsupported message content part");
-};
-var normalizeMessage = (message) => {
-  const { role, name, tool_call_id } = message;
-  if (role === "tool" || role === "function") {
-    const content = ensureArray(message.content).map((part) => typeof part === "string" ? part : JSON.stringify(part)).join("\n");
-    return {
-      role,
-      name,
-      tool_call_id,
-      content
-    };
-  }
-  const contentParts = ensureArray(message.content).map(normalizeContentPart);
-  if (contentParts.length === 1 && contentParts[0].type === "text") {
-    return {
-      role,
-      name,
-      content: contentParts[0].text
-    };
-  }
-  return {
-    role,
-    name,
-    content: contentParts
-  };
-};
-var normalizeToolChoice = (toolChoice, tools) => {
-  if (!toolChoice) return void 0;
-  if (toolChoice === "none" || toolChoice === "auto") {
-    return toolChoice;
-  }
-  if (toolChoice === "required") {
-    if (!tools || tools.length === 0) {
-      throw new Error(
-        "tool_choice 'required' was provided but no tools were configured"
-      );
-    }
-    if (tools.length > 1) {
-      throw new Error(
-        "tool_choice 'required' needs a single tool or specify the tool name explicitly"
-      );
-    }
-    return {
-      type: "function",
-      function: { name: tools[0].function.name }
-    };
-  }
-  if ("name" in toolChoice) {
-    return {
-      type: "function",
-      function: { name: toolChoice.name }
-    };
-  }
-  return toolChoice;
-};
-var resolveApiUrl = () => ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0 ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions` : "https://forge.manus.im/v1/chat/completions";
-var assertApiKey = () => {
-  if (!ENV.forgeApiKey) {
-    throw new Error("OPENAI_API_KEY is not configured");
-  }
-};
-var normalizeResponseFormat = ({
-  responseFormat,
-  response_format,
-  outputSchema,
-  output_schema
-}) => {
-  const explicitFormat = responseFormat || response_format;
-  if (explicitFormat) {
-    if (explicitFormat.type === "json_schema" && !explicitFormat.json_schema?.schema) {
-      throw new Error(
-        "responseFormat json_schema requires a defined schema object"
-      );
-    }
-    return explicitFormat;
-  }
-  const schema = outputSchema || output_schema;
-  if (!schema) return void 0;
-  if (!schema.name || !schema.schema) {
-    throw new Error("outputSchema requires both name and schema");
-  }
-  return {
-    type: "json_schema",
-    json_schema: {
-      name: schema.name,
-      schema: schema.schema,
-      ...typeof schema.strict === "boolean" ? { strict: schema.strict } : {}
-    }
-  };
-};
-var RETRY_MAX_RETRIES = 4;
-var RETRY_BASE_DELAY_MS = 500;
-var RETRY_MAX_DELAY_MS = 3e4;
-var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-var parseRetryAfter = (value) => {
-  if (!value) return void 0;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1e3);
-  const at = Date.parse(value);
-  return Number.isNaN(at) ? void 0 : Math.max(0, at - Date.now());
-};
-var computeBackoffDelay = (attempt, retryAfterMs) => {
-  const cap = Math.min(RETRY_BASE_DELAY_MS * 2 ** attempt, RETRY_MAX_DELAY_MS);
-  const jittered = cap / 2 + Math.random() * (cap / 2);
-  return Math.min(Math.max(jittered, retryAfterMs ?? 0), RETRY_MAX_DELAY_MS);
-};
-var fetchWithBackoff = async (url, init) => {
-  let lastError;
-  for (let attempt = 0; attempt <= RETRY_MAX_RETRIES; attempt++) {
-    try {
-      const response = await fetch(url, init);
-      if (response.ok || attempt === RETRY_MAX_RETRIES) {
-        return response;
-      }
-      const retryAfterMs = parseRetryAfter(
-        response.headers.get("retry-after")
-      );
-      try {
-        await response.body?.cancel();
-      } catch {
-      }
-      console.warn(
-        `LLM request retry ${attempt + 1}/${RETRY_MAX_RETRIES} after status ${response.status}`
-      );
-      await sleep(computeBackoffDelay(attempt, retryAfterMs));
-    } catch (error) {
-      lastError = error;
-      if (attempt === RETRY_MAX_RETRIES) throw error;
-      console.warn(
-        `LLM request retry ${attempt + 1}/${RETRY_MAX_RETRIES} after network error`
-      );
-      await sleep(computeBackoffDelay(attempt));
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error("LLM request failed after exhausting retries");
-};
-async function invokeLLM(params) {
-  assertApiKey();
-  const {
-    messages,
-    tools,
-    toolChoice,
-    tool_choice,
-    outputSchema,
-    output_schema,
-    responseFormat,
-    response_format,
-    model,
-    thinking,
-    reasoning,
-    maxTokens,
-    max_tokens
-  } = params;
-  const payload = {
-    messages: messages.map(normalizeMessage)
-  };
-  if (model) {
-    payload.model = model;
-  }
-  if (tools && tools.length > 0) {
-    payload.tools = tools;
-  }
-  const normalizedToolChoice = normalizeToolChoice(
-    toolChoice || tool_choice,
-    tools
-  );
-  if (normalizedToolChoice) {
-    payload.tool_choice = normalizedToolChoice;
-  }
-  const resolvedMaxTokens = max_tokens ?? maxTokens;
-  if (typeof resolvedMaxTokens === "number") {
-    payload.max_tokens = resolvedMaxTokens;
-  }
-  if (thinking) {
-    payload.thinking = thinking;
-  }
-  if (reasoning) {
-    payload.reasoning = reasoning;
-  }
-  const normalizedResponseFormat = normalizeResponseFormat({
-    responseFormat,
-    response_format,
-    outputSchema,
-    output_schema
-  });
-  if (normalizedResponseFormat) {
-    payload.response_format = normalizedResponseFormat;
-  }
-  const response = await fetchWithBackoff(resolveApiUrl(), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `LLM invoke failed: ${response.status} ${response.statusText} \u2013 ${errorText}`
-    );
-  }
-  return await response.json();
-}
-
 // server/cometClaude.ts
 var COMETAPI_BASE_URL = "https://api.cometapi.com";
 var DEFAULT_MODEL = "claude-sonnet-5";
@@ -1683,14 +1462,19 @@ var appRouter = router({
   memory: router({
     weave: publicProcedure.input(weaveInput).mutation(async ({ input }) => {
       try {
-        const response = await invokeLLM({ messages: [
-          { role: "system", content: "You are Evercrafted's Emotional Design Translator and Story Genesis preview engine. Return only valid JSON matching the provided schema. Read the human memory with restraint. Use a specific canonical Evercrafted atmosphere archetype when possible. The story preview should be 90\u2013140 words, present tense, gender-neutral, sensory, and never use generic product language." },
+        const response = await generateClaudeJson([
+          { role: "system", content: `You are Evercrafted's Emotional Design Translator and Story Genesis preview engine. Return only valid JSON matching this schema exactly: ${JSON.stringify(weaveSchema)}. Read the human memory with restraint. Use a specific canonical Evercrafted atmosphere archetype when possible. The story preview should be 90\u2013140 words, present tense, gender-neutral, sensory, and never use generic product language.` },
           { role: "user", content: JSON.stringify(input) }
-        ], response_format: { type: "json_schema", json_schema: { name: "evercrafted_weave_preview", strict: true, schema: weaveSchema } } });
+        ]);
         const content = response.choices?.[0]?.message?.content;
-        if (typeof content !== "string") throw new Error("The emotional reading was empty.");
-        const result = JSON.parse(content);
-        await notifyOwner({ title: "New Evercrafted memory intake", content: `A new intake was woven for ${input.occasion}. Atmosphere: ${result.atmosphere}.` });
+        const text2 = Array.isArray(content) ? content.map((part) => part.text ?? "").join("") : content;
+        if (typeof text2 !== "string" || !text2) throw new Error("The emotional reading was empty.");
+        const result = JSON.parse(text2);
+        try {
+          await notifyOwner({ title: "New Evercrafted memory intake", content: `A new intake was woven for ${input.occasion}. Atmosphere: ${result.atmosphere}.` });
+        } catch (notifyError) {
+          console.warn("[Memory] owner notification failed (non-fatal)", notifyError);
+        }
         return result;
       } catch (error) {
         console.error("[Memory] weave failed", error);
@@ -2089,9 +1873,10 @@ var appRouter = router({
       const florals = Array.isArray(analysis.florals) ? analysis.florals : [];
       let generatedStory;
       try {
-        const storyResponse = await invokeLLM({ messages: [{ role: "system", content: "You are Evercrafted's Story Genesis Engine. Return only JSON. From this reverse-engineered wreath analysis, write a 600\u2013800 word five-movement narrative with 7\u20139 cinematic beats. Use present tense, they/them/their pronouns, specific sensory detail, and no product copy." }, { role: "user", content: JSON.stringify({ title: input.title, analysis }) }], response_format: { type: "json_schema", json_schema: { name: "signature_story_genesis", strict: true, schema: storySchema2 } } });
-        const content = storyResponse.choices?.[0]?.message?.content;
-        if (typeof content !== "string") throw new Error("Story Genesis returned no narrative.");
+        const storyResponse = await generateClaudeJson([{ role: "system", content: `You are Evercrafted's Story Genesis Engine. Return only JSON matching this schema exactly: ${JSON.stringify(storySchema2)}. From this reverse-engineered wreath analysis, write a 600\u2013800 word five-movement narrative with 7\u20139 cinematic beats. Use present tense, they/them/their pronouns, specific sensory detail, and no product copy.` }, { role: "user", content: JSON.stringify({ title: input.title, analysis }) }]);
+        const rawContent = storyResponse.choices?.[0]?.message?.content;
+        const content = Array.isArray(rawContent) ? rawContent.map((part) => part.text ?? "").join("") : rawContent;
+        if (typeof content !== "string" || !content) throw new Error("Story Genesis returned no narrative.");
         const parsedStory = JSON.parse(content);
         if (!parsedStory.body || parsedStory.body.trim().length < 100 || !Array.isArray(parsedStory.beats) || parsedStory.beats.length < 7) throw new Error("Story Genesis returned an incomplete narrative.");
         generatedStory = parsedStory;
@@ -2129,9 +1914,10 @@ var appRouter = router({
       const rows = await db.select().from(signatureWreaths).where(eq3(signatureWreaths.id, input.id)).limit(1);
       const wreath = rows[0];
       if (!wreath) throw new TRPCError3({ code: "NOT_FOUND", message: "Signature Wreath not found." });
-      const response = await invokeLLM({ messages: [{ role: "system", content: "You are Evercrafted's Story Genesis Engine. Return only JSON. Write a 600\u2013800 word five-movement literary narrative with 7\u20139 cinematic beats from this reverse-engineered Signature Wreath. Use present tense, they/them/their pronouns, sensory detail, and no product copy." }, { role: "user", content: JSON.stringify({ title: wreath.title, analysis: wreath.metadata, currentStory: wreath.story, revisionDirection: input.direction }) }], response_format: { type: "json_schema", json_schema: { name: "signature_story_genesis_revision", strict: true, schema: storySchema2 } } });
-      const content = response.choices?.[0]?.message?.content;
-      if (typeof content !== "string") throw new TRPCError3({ code: "BAD_REQUEST", message: "Story Genesis returned no narrative." });
+      const response = await generateClaudeJson([{ role: "system", content: `You are Evercrafted's Story Genesis Engine. Return only JSON matching this schema exactly: ${JSON.stringify(storySchema2)}. Write a 600\u2013800 word five-movement literary narrative with 7\u20139 cinematic beats from this reverse-engineered Signature Wreath. Use present tense, they/them/their pronouns, sensory detail, and no product copy.` }, { role: "user", content: JSON.stringify({ title: wreath.title, analysis: wreath.metadata, currentStory: wreath.story, revisionDirection: input.direction }) }]);
+      const rawContent = response.choices?.[0]?.message?.content;
+      const content = Array.isArray(rawContent) ? rawContent.map((part) => part.text ?? "").join("") : rawContent;
+      if (typeof content !== "string" || !content) throw new TRPCError3({ code: "BAD_REQUEST", message: "Story Genesis returned no narrative." });
       const story = JSON.parse(content);
       const metadata = wreath.metadata ?? {};
       const storyVersion = Number(metadata.storyVersion ?? 0) + 1;
@@ -2413,7 +2199,11 @@ var appRouter = router({
       }
       const validationReport = { missingRequired: missing, duplicates, uniqueItems: seen.size, importedRows: input.items.length };
       const result = await saveInventoryBatch(input.filename, input.items, validationReport);
-      await notifyOwner({ title: "Inventory batch imported", content: `${input.filename} added ${result.inserted} records to the review queue.` });
+      try {
+        await notifyOwner({ title: "Inventory batch imported", content: `${input.filename} added ${result.inserted} records to the review queue.` });
+      } catch (notifyError) {
+        console.warn("[Inventory] owner notification failed (non-fatal)", notifyError);
+      }
       return result;
     }),
     setApproval: adminProcedure2.input(z3.object({ itemId: z3.string().min(1), approved: z3.boolean(), status: z3.enum(["active", "substitute", "inactive"]).default("active"), replacementItemId: z3.string().max(80).optional(), provenanceDecision: z3.enum(["unreviewed", "verified", "flagged"]).default("unreviewed") })).mutation(async ({ input }) => {
