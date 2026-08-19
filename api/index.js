@@ -658,7 +658,7 @@ var _db = null;
 async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(postgres(process.env.DATABASE_URL, { max: 1 }));
+      _db = drizzle(postgres(process.env.DATABASE_URL, { max: 1, connect_timeout: 10, idle_timeout: 20 }));
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;

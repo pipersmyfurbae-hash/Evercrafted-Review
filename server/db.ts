@@ -9,7 +9,15 @@ let _db: ReturnType<typeof drizzle> | null = null;
 
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
-    try { _db = drizzle(postgres(process.env.DATABASE_URL, { max: 1 })); }
+    try {
+      // max: 1 because each serverless invocation gets its own instance of this module.
+      // connect_timeout/idle_timeout matter *because* of that: if the shared pooler is out of
+      // slots (e.g. a burst of concurrent invocations), a connection attempt with no timeout
+      // hangs forever instead of failing fast — and idle_timeout releases this instance's slot
+      // back to the pooler quickly between requests instead of holding it until the function
+      // is recycled.
+      _db = drizzle(postgres(process.env.DATABASE_URL, { max: 1, connect_timeout: 10, idle_timeout: 20 }));
+    }
     catch (error) { console.warn("[Database] Failed to connect:", error); _db = null; }
   }
   return _db;
