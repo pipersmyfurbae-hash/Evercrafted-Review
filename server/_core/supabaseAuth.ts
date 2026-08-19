@@ -24,6 +24,13 @@ function getBearerToken(req: Request): string | undefined {
   return undefined;
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
+  ]);
+}
+
 export async function authenticateRequest(req: Request): Promise<AuthenticatedUser> {
   if (!supabaseAdmin) {
     throw ForbiddenError("Supabase auth is not configured (missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)");
@@ -32,7 +39,10 @@ export async function authenticateRequest(req: Request): Promise<AuthenticatedUs
   const token = getBearerToken(req);
   if (!token) throw ForbiddenError("Missing bearer token");
 
-  const { data, error } = await supabaseAdmin.auth.getUser(token);
+  // supabase-js's auth.getUser() has no built-in network timeout — without this, a hang
+  // reaching Supabase's Auth API surfaces as a permanently stuck request client-side,
+  // with no error to react to.
+  const { data, error } = await withTimeout(supabaseAdmin.auth.getUser(token), 8000, "Supabase auth.getUser()");
   if (error || !data.user) throw ForbiddenError("Invalid or expired session");
 
   const supabaseUser = data.user;

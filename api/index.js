@@ -2645,13 +2645,19 @@ function getBearerToken(req) {
   }
   return void 0;
 }
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms))
+  ]);
+}
 async function authenticateRequest(req) {
   if (!supabaseAdmin) {
     throw ForbiddenError("Supabase auth is not configured (missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)");
   }
   const token = getBearerToken(req);
   if (!token) throw ForbiddenError("Missing bearer token");
-  const { data, error } = await supabaseAdmin.auth.getUser(token);
+  const { data, error } = await withTimeout(supabaseAdmin.auth.getUser(token), 8e3, "Supabase auth.getUser()");
   if (error || !data.user) throw ForbiddenError("Invalid or expired session");
   const supabaseUser = data.user;
   const signedInAt = /* @__PURE__ */ new Date();
