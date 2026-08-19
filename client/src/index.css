@@ -1,0 +1,55 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Mono:wght@400;500&family=Hanken+Grotesk:wght@400;500;600&display=swap');
+@import "tailwindcss";
+@import "tw-animate-css";
+
+:root {
+  --background: 40 27% 95%;
+  --foreground: 36 10% 15%;
+  --card: 40 33% 98%;
+  --card-foreground: 36 10% 15%;
+  --popover: 40 33% 98%;
+  --popover-foreground: 36 10% 15%;
+  --primary: 145 22% 24%;
+  --primary-foreground: 40 33% 98%;
+  --secondary: 39 28% 88%;
+  --secondary-foreground: 36 10% 15%;
+  --muted: 39 20% 90%;
+  --muted-foreground: 33 9% 44%;
+  --accent: 37 44% 65%;
+  --accent-foreground: 36 10% 15%;
+  --destructive: 0 64% 45%;
+  --border: 36 19% 82%;
+  --input: 36 19% 82%;
+  --ring: 37 44% 65%;
+  --radius: .8rem;
+}
+
+@theme inline {
+  --color-background: oklch(0.95 0.025 90);
+  --color-foreground: oklch(0.18 0.02 80);
+  --color-card: oklch(0.985 0.012 90);
+  --color-card-foreground: oklch(0.18 0.02 80);
+  --color-primary: oklch(0.34 0.07 150);
+  --color-primary-foreground: oklch(0.98 0.012 90);
+  --color-muted: oklch(0.91 0.02 85);
+  --color-muted-foreground: oklch(0.48 0.025 75);
+  --color-accent: oklch(0.68 0.09 75);
+  --color-accent-foreground: oklch(0.18 0.02 80);
+  --color-border: oklch(0.83 0.025 80);
+  --color-input: oklch(0.83 0.025 80);
+  --color-ring: oklch(0.68 0.09 75);
+  --font-serif: 'Cormorant Garamond', Georgia, serif;
+  --font-sans: 'Hanken Grotesk', system-ui, sans-serif;
+  --font-mono: 'DM Mono', monospace;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: #f6f3ed; color: #24231f; font-family: 'Hanken Grotesk', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+button, input, textarea { font: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+.eyebrow { display: block; font-family: 'DM Mono', monospace; font-size: 10px; line-height: 1.2; letter-spacing: .24em; text-transform: uppercase; color: #8a7352; }
+::selection { background: #d7c29b; color: #24372b; }
+:focus-visible { outline: 2px solid #b28c56; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; } }

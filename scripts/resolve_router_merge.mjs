@@ -1,0 +1,13 @@
+import fs from "node:fs";
+const path = "server/routers.ts";
+const source = fs.readFileSync(path, "utf8");
+const start = source.indexOf("<<<<<<< HEAD\n");
+const end = source.indexOf(">>>>>>> origin/main\n", start);
+if (start < 0 || end < 0) throw new Error("Expected router conflict markers were not found.");
+const head = source.slice(start, source.indexOf("=======\n", start));
+const remoteStart = source.indexOf("=======\n", start) + "=======\n".length;
+const remote = source.slice(remoteStart, end);
+const ensureLine = head.replace("<<<<<<< HEAD\n", "").trim();
+const collectionLine = remote.trim();
+const replacement = `    ${ensureLine}\n    ${collectionLine}\n`;
+fs.writeFileSync(path, source.slice(0, start) + replacement + source.slice(end + ">>>>>>> origin/main\n".length));

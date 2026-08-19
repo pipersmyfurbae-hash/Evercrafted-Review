@@ -1,0 +1,1 @@
+ALTER TABLE `cometRenderTasks` ADD `metadata` json;
