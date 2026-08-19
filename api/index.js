@@ -338,6 +338,11 @@ JSON shape to return: ${JSON.stringify(storySchema)}` },
   return story;
 }
 var storyGenesisProvider = { provider: "cometapi", model: DEFAULT_MODEL, endpoint: `${COMETAPI_BASE_URL}/v1/chat/completions` };
+function stripJsonFence(text2) {
+  const trimmed = text2.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenced ? fenced[1].trim() : trimmed;
+}
 async function generateClaudeJson(messages, maxTokens = 5e3) {
   const apiKey = process.env.COMETAPI_API_KEY;
   if (!apiKey) throw new Error("COMETAPI_API_KEY is not configured for Claude Emotional Design Translator.");
@@ -348,7 +353,14 @@ async function generateClaudeJson(messages, maxTokens = 5e3) {
     body: JSON.stringify({ model, temperature: 0.45, max_tokens: maxTokens, response_format: { type: "json_object" }, messages })
   });
   if (!response.ok) throw new Error(`CometAPI Claude JSON generation failed: ${response.status} ${await response.text()}`);
-  return await response.json();
+  const payload = await response.json();
+  const rawContent = payload.choices?.[0]?.message?.content;
+  if (typeof rawContent === "string") {
+    payload.choices[0].message.content = stripJsonFence(rawContent);
+  } else if (Array.isArray(rawContent)) {
+    payload.choices[0].message.content = rawContent.map((part) => typeof part.text === "string" ? { ...part, text: stripJsonFence(part.text) } : part);
+  }
+  return payload;
 }
 
 // server/db.ts

@@ -123,6 +123,14 @@ export const storyGenesisProvider = { provider: "cometapi", model: DEFAULT_MODEL
 
 export type ClaudeMessage = { role: "system" | "user"; content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" } }> };
 
+// CometAPI's json_object mode is a soft hint, not enforced — the model sometimes wraps its
+// JSON response in a markdown code fence (```json ... ```) anyway, which breaks a raw JSON.parse.
+function stripJsonFence(text: string): string {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
 export async function generateClaudeJson(messages: ClaudeMessage[], maxTokens = 5000) {
   const apiKey = process.env.COMETAPI_API_KEY;
   if (!apiKey) throw new Error("COMETAPI_API_KEY is not configured for Claude Emotional Design Translator.");
@@ -133,5 +141,12 @@ export async function generateClaudeJson(messages: ClaudeMessage[], maxTokens = 
     body: JSON.stringify({ model, temperature: 0.45, max_tokens: maxTokens, response_format: { type: "json_object" }, messages }),
   });
   if (!response.ok) throw new Error(`CometAPI Claude JSON generation failed: ${response.status} ${await response.text()}`);
-  return await response.json() as { choices?: Array<{ message?: { content?: string | Array<{ text?: string }> } }> };
+  const payload = await response.json() as { choices?: Array<{ message?: { content?: string | Array<{ text?: string }> } }> };
+  const rawContent = payload.choices?.[0]?.message?.content;
+  if (typeof rawContent === "string") {
+    payload.choices![0]!.message!.content = stripJsonFence(rawContent);
+  } else if (Array.isArray(rawContent)) {
+    payload.choices![0]!.message!.content = rawContent.map((part) => (typeof part.text === "string" ? { ...part, text: stripJsonFence(part.text) } : part));
+  }
+  return payload;
 }
