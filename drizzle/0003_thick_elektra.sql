@@ -1,2 +1,0 @@
-ALTER TABLE `inventoryItems` ADD `replacementItemId` varchar(80);--> statement-breakpoint
-ALTER TABLE `inventoryItems` ADD `provenanceDecision` enum('unreviewed','verified','flagged') DEFAULT 'unreviewed' NOT NULL;

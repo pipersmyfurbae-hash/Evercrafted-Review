@@ -1,23 +1,27 @@
-import { integer, json, pgEnum, pgTable, text, timestamp, varchar, numeric, boolean, serial } from "drizzle-orm/pg-core";
+import { integer, json, pgSchema, text, timestamp, varchar, numeric, boolean, serial } from "drizzle-orm/pg-core";
 
-export const userRoleEnum = pgEnum("user_role", ["user", "admin"]);
-export const subscriptionStatusEnum = pgEnum("subscription_status", ["trialing", "active", "past_due", "canceled"]);
-export const projectStatusEnum = pgEnum("project_status", ["intake", "story", "selection", "blueprint", "render", "lookbook", "complete"]);
-export const approvalStatusEnum = pgEnum("approval_status", ["draft", "awaiting_approval", "approved", "superseded"]);
-export const inventoryBatchStatusEnum = pgEnum("inventory_batch_status", ["importing", "completed", "failed"]);
-export const provenanceDecisionEnum = pgEnum("provenance_decision", ["unreviewed", "verified", "flagged"]);
-export const floralDecisionEnum = pgEnum("floral_decision", ["pending", "accepted", "rejected"]);
-export const renderAssetKindEnum = pgEnum("render_asset_kind", ["wreath", "lifestyle", "blueprint_pdf", "ecrpkg"]);
-export const renderAssetStatusEnum = pgEnum("render_asset_status", ["uploaded", "review", "approved", "rejected", "published"]);
-export const cometTaskKindEnum = pgEnum("comet_task_kind", ["wreath", "lifestyle"]);
-export const cometTaskStatusEnum = pgEnum("comet_task_status", ["queued", "submitting", "polling", "completed", "failed", "review_ready"]);
-export const lookbookStatusEnum = pgEnum("lookbook_status", ["draft", "published", "shareable", "archived"]);
-export const reverseEngineeringJobStatusEnum = pgEnum("reverse_engineering_job_status", ["uploaded", "analyzing", "review", "approved", "rejected"]);
-export const operatorDecisionEnum = pgEnum("operator_decision", ["pending", "confirmed", "substituted", "unresolved"]);
-export const signatureWreathStatusEnum = pgEnum("signature_wreath_status", ["draft", "review", "approved", "published", "archived", "rejected"]);
-export const signatureWreathAssetKindEnum = pgEnum("signature_wreath_asset_kind", ["hero", "lifestyle", "blueprint", "recipe"]);
+// Dedicated schema so this app's tables never collide with other brands' tables
+// sharing the same Supabase Postgres database (e.g. moodoor's own `users` table).
+export const evercrafted = pgSchema("evercrafted");
 
-export const users = pgTable("users", {
+export const userRoleEnum = evercrafted.enum("user_role", ["user", "admin"]);
+export const subscriptionStatusEnum = evercrafted.enum("subscription_status", ["trialing", "active", "past_due", "canceled"]);
+export const projectStatusEnum = evercrafted.enum("project_status", ["intake", "story", "selection", "blueprint", "render", "lookbook", "complete"]);
+export const approvalStatusEnum = evercrafted.enum("approval_status", ["draft", "awaiting_approval", "approved", "superseded"]);
+export const inventoryBatchStatusEnum = evercrafted.enum("inventory_batch_status", ["importing", "completed", "failed"]);
+export const provenanceDecisionEnum = evercrafted.enum("provenance_decision", ["unreviewed", "verified", "flagged"]);
+export const floralDecisionEnum = evercrafted.enum("floral_decision", ["pending", "accepted", "rejected"]);
+export const renderAssetKindEnum = evercrafted.enum("render_asset_kind", ["wreath", "lifestyle", "blueprint_pdf", "ecrpkg"]);
+export const renderAssetStatusEnum = evercrafted.enum("render_asset_status", ["uploaded", "review", "approved", "rejected", "published"]);
+export const cometTaskKindEnum = evercrafted.enum("comet_task_kind", ["wreath", "lifestyle"]);
+export const cometTaskStatusEnum = evercrafted.enum("comet_task_status", ["queued", "submitting", "polling", "completed", "failed", "review_ready"]);
+export const lookbookStatusEnum = evercrafted.enum("lookbook_status", ["draft", "published", "shareable", "archived"]);
+export const reverseEngineeringJobStatusEnum = evercrafted.enum("reverse_engineering_job_status", ["uploaded", "analyzing", "review", "approved", "rejected"]);
+export const operatorDecisionEnum = evercrafted.enum("operator_decision", ["pending", "confirmed", "substituted", "unresolved"]);
+export const signatureWreathStatusEnum = evercrafted.enum("signature_wreath_status", ["draft", "review", "approved", "published", "archived", "rejected"]);
+export const signatureWreathAssetKindEnum = evercrafted.enum("signature_wreath_asset_kind", ["hero", "lifestyle", "blueprint", "recipe"]);
+
+export const users = evercrafted.table("users", {
   id: serial("id").primaryKey(),
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: text("name"),
@@ -29,7 +33,7 @@ export const users = pgTable("users", {
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
 });
 
-export const plans = pgTable("plans", {
+export const plans = evercrafted.table("plans", {
   id: serial("id").primaryKey(),
   code: varchar("code", { length: 32 }).notNull().unique(),
   name: varchar("name", { length: 80 }).notNull(),
@@ -42,7 +46,7 @@ export const plans = pgTable("plans", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
-export const subscriptions = pgTable("subscriptions", {
+export const subscriptions = evercrafted.table("subscriptions", {
   id: serial("id").primaryKey(),
   userId: integer("userId").notNull(),
   planId: integer("planId").notNull(),
@@ -54,7 +58,7 @@ export const subscriptions = pgTable("subscriptions", {
   updatedAt: timestamp("updatedAt").defaultNow().notNull().$onUpdate(() => new Date()),
 });
 
-export const projects = pgTable("projects", {
+export const projects = evercrafted.table("projects", {
   id: serial("id").primaryKey(),
   userId: integer("userId").notNull(),
   name: varchar("name", { length: 160 }).notNull(),
@@ -64,7 +68,7 @@ export const projects = pgTable("projects", {
   updatedAt: timestamp("updatedAt").defaultNow().notNull().$onUpdate(() => new Date()),
 });
 
-export const memoryIntakes = pgTable("memoryIntakes", {
+export const memoryIntakes = evercrafted.table("memoryIntakes", {
   id: serial("id").primaryKey(),
   projectId: integer("projectId").notNull(),
   version: integer("version").default(1).notNull(),
@@ -79,7 +83,7 @@ export const memoryIntakes = pgTable("memoryIntakes", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
-export const emotionalProfiles = pgTable("emotionalProfiles", {
+export const emotionalProfiles = evercrafted.table("emotionalProfiles", {
   id: serial("id").primaryKey(),
   projectId: integer("projectId").notNull(),
   intakeId: integer("intakeId").notNull(),
@@ -91,7 +95,7 @@ export const emotionalProfiles = pgTable("emotionalProfiles", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
-export const stories = pgTable("stories", {
+export const stories = evercrafted.table("stories", {
   id: serial("id").primaryKey(),
   projectId: integer("projectId").notNull(),
   emotionalProfileId: integer("emotionalProfileId").notNull(),
@@ -104,7 +108,7 @@ export const stories = pgTable("stories", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
-export const inventoryBatches = pgTable("inventoryBatches", {
+export const inventoryBatches = evercrafted.table("inventoryBatches", {
   id: serial("id").primaryKey(),
   filename: varchar("filename", { length: 180 }).notNull(),
   itemCount: integer("itemCount").default(0).notNull(),
@@ -116,7 +120,7 @@ export const inventoryBatches = pgTable("inventoryBatches", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
-export const inventoryItems = pgTable("inventoryItems", {
+export const inventoryItems = evercrafted.table("inventoryItems", {
   id: serial("id").primaryKey(),
   itemId: varchar("itemId", { length: 80 }).notNull().unique(),
   sourceSku: varchar("sourceSku", { length: 80 }).notNull(),
@@ -141,7 +145,7 @@ export const inventoryItems = pgTable("inventoryItems", {
   updatedAt: timestamp("updatedAt").defaultNow().notNull().$onUpdate(() => new Date()),
 });
 
-export const floralSelections = pgTable("floralSelections", {
+export const floralSelections = evercrafted.table("floralSelections", {
   id: serial("id").primaryKey(),
   projectId: integer("projectId").notNull(),
   itemId: varchar("itemId", { length: 80 }).notNull(),
@@ -153,7 +157,7 @@ export const floralSelections = pgTable("floralSelections", {
   updatedAt: timestamp("updatedAt").defaultNow().notNull().$onUpdate(() => new Date()),
 });
 
-export const blueprints = pgTable("blueprints", {
+export const blueprints = evercrafted.table("blueprints", {
   id: serial("id").primaryKey(),
   projectId: integer("projectId").notNull(),
   version: integer("version").default(1).notNull(),
@@ -164,7 +168,7 @@ export const blueprints = pgTable("blueprints", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
-export const renderAssets = pgTable("renderAssets", {
+export const renderAssets = evercrafted.table("renderAssets", {
   id: serial("id").primaryKey(),
   projectId: integer("projectId").notNull(),
   kind: renderAssetKindEnum("kind").notNull(),
@@ -177,7 +181,7 @@ export const renderAssets = pgTable("renderAssets", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
-export const cometRenderTasks = pgTable("cometRenderTasks", {
+export const cometRenderTasks = evercrafted.table("cometRenderTasks", {
   id: serial("id").primaryKey(),
   projectId: integer("projectId").notNull(),
   providerTaskId: varchar("providerTaskId", { length: 240 }).notNull(),
@@ -198,7 +202,7 @@ export const cometRenderTasks = pgTable("cometRenderTasks", {
   updatedAt: timestamp("updatedAt").defaultNow().notNull().$onUpdate(() => new Date()),
 });
 
-export const lookbooks = pgTable("lookbooks", {
+export const lookbooks = evercrafted.table("lookbooks", {
   id: serial("id").primaryKey(),
   projectId: integer("projectId").notNull(),
   slug: varchar("slug", { length: 180 }).notNull().unique(),
@@ -210,7 +214,7 @@ export const lookbooks = pgTable("lookbooks", {
   updatedAt: timestamp("updatedAt").defaultNow().notNull().$onUpdate(() => new Date()),
 });
 
-export const entitlements = pgTable("entitlements", {
+export const entitlements = evercrafted.table("entitlements", {
   id: serial("id").primaryKey(),
   userId: integer("userId").notNull(),
   projectId: integer("projectId"),
@@ -223,7 +227,7 @@ export const entitlements = pgTable("entitlements", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
-export const reverseEngineeringJobs = pgTable("reverseEngineeringJobs", {
+export const reverseEngineeringJobs = evercrafted.table("reverseEngineeringJobs", {
   id: serial("id").primaryKey(),
   ownerId: integer("ownerId").notNull(),
   title: varchar("title", { length: 180 }).notNull(),
@@ -238,7 +242,7 @@ export const reverseEngineeringJobs = pgTable("reverseEngineeringJobs", {
   updatedAt: timestamp("updatedAt").defaultNow().notNull().$onUpdate(() => new Date()),
 });
 
-export const reverseEngineeringElements = pgTable("reverseEngineeringElements", {
+export const reverseEngineeringElements = evercrafted.table("reverseEngineeringElements", {
   id: serial("id").primaryKey(),
   jobId: integer("jobId").notNull(),
   role: varchar("role", { length: 40 }).notNull(),
@@ -255,7 +259,7 @@ export const reverseEngineeringElements = pgTable("reverseEngineeringElements", 
   updatedAt: timestamp("updatedAt").defaultNow().notNull().$onUpdate(() => new Date()),
 });
 
-export const signatureWreaths = pgTable("signatureWreaths", {
+export const signatureWreaths = evercrafted.table("signatureWreaths", {
   id: serial("id").primaryKey(),
   ownerId: integer("ownerId").notNull(),
   reverseEngineeringJobId: integer("reverseEngineeringJobId").notNull(),
@@ -273,7 +277,7 @@ export const signatureWreaths = pgTable("signatureWreaths", {
   updatedAt: timestamp("updatedAt").defaultNow().notNull().$onUpdate(() => new Date()),
 });
 
-export const signatureWreathAssets = pgTable("signatureWreathAssets", {
+export const signatureWreathAssets = evercrafted.table("signatureWreathAssets", {
   id: serial("id").primaryKey(),
   signatureWreathId: integer("signatureWreathId").notNull(),
   renderAssetId: integer("renderAssetId"),
