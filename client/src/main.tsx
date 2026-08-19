@@ -58,10 +58,16 @@ const trpcClient = trpc.createClient({
   ],
 });
 
-// Supabase's client keeps the session fresh (refresh tokens, localStorage) on its
-// own; when it rotates the token we just need react-query to refetch anything
-// that depends on the current user.
-supabase.auth.onAuthStateChange(() => {
+// Supabase's client keeps the session fresh (refresh tokens, localStorage) on its own,
+// and fires this on every event — including a periodic background TOKEN_REFRESHED with
+// no real change to who's signed in. Only invalidate the cache when the signed-in user
+// actually changes (sign-in, sign-out, switching accounts); otherwise a routine token
+// refresh triggers a full-app refetch storm every time it happens.
+let lastAuthedUserId: string | null = null;
+supabase.auth.onAuthStateChange((_event, session) => {
+  const userId = session?.user?.id ?? null;
+  if (userId === lastAuthedUserId) return;
+  lastAuthedUserId = userId;
   queryClient.invalidateQueries();
 });
 
